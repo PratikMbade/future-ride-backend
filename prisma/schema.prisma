@@ -1,0 +1,185 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// prisma/schema.prisma
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                    String    @id @default(uuid())
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+// better-auth SIWE plugin table
+model WalletAddress {
+  id        String   @id @default(uuid())
+  userId    String
+  address   String
+  chainId   Int
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model User {
+  id            String   @id @default(uuid())
+  name          String?  // optional
+  email         String?  @unique // optional
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // your app fields
+  contractRegId   Int?
+  userAddress     String  @unique
+  referalAddress  String?
+  directTeamCount Int     @default(0)
+  totalTeamCount  Int     @default(0)
+  isRegistered    Boolean @default(false)
+
+  sessions        Session[]
+  accounts        Account[]
+  walletAddresses WalletAddress[]
+  packages        Package[]
+  directIncome    DirectIncome[]
+  generationIncome  GenerationIncome[]
+  lapsIncome        LapsIncome[]
+  uplineNodes       GenerationTree[] @relation("UplineUser")
+  leftNodes         GenerationTree[] @relation("LeftUser")
+  rightNodes        GenerationTree[] @relation("RightUser")
+  @@index([userAddress, contractRegId])
+}
+
+model Package {
+  id                  String   @id @default(uuid())
+  packageNumber       Int
+  packageName         String
+  packageAmount       Int
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  packageBuyTranxHash String   @unique
+  tranxHash           String
+
+  @@unique([userId, tranxHash, packageNumber])
+}
+
+model DirectIncome {
+  id              String   @id @default(uuid())
+  fromUserAddress String
+  packageNumber   Int
+  packageName     String
+  amount          String
+  timestamp       String
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  transactionHash String
+
+  @@unique([fromUserAddress,transactionHash,packageNumber])
+}
+
+model GenerationIncome{
+  id              String   @id @default(uuid())
+  fromUserAddress String
+  packageNumber   Int
+  packageName     String
+  amount          String
+  timestamp       String
+  level           Int      @default(0)  
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  transactionHash String
+
+   @@unique([fromUserAddress,transactionHash,packageNumber])
+
+}
+
+model GenerationTree {
+  id               String @id @default(uuid())
+  uplineAddress    String
+  uplineUserId     String @unique
+  uplineUser       User   @relation("UplineUser", fields: [uplineUserId], references: [id], onDelete: Cascade)
+  leftChildAddress String?
+  leftUserId       String?
+  leftUser         User?   @relation("LeftUser", fields: [leftUserId], references: [id], onDelete: Cascade)
+  rightChildAddress String?
+  rightUserId      String?
+  rightUser        User?   @relation("RightUser", fields: [rightUserId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+}
+model LapsIncome {
+  id              String   @id @default(uuid())
+  fromUserAddress String   // lapsed address
+  packageNumber   Int
+  packageName     String
+  amount          String
+  timestamp       String
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactionHash String   // ← add this
+  level           Int      @default(0)  // ← add this
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([transactionHash, packageNumber, fromUserAddress])
+}
+
+
+model SyncMeta{
+  key String @id
+  value String
+  updatedAt DateTime @updatedAt
+}
