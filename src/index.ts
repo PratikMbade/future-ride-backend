@@ -34,6 +34,7 @@ import userRoutes             from './routes/user.routes';
 import incomeRoutes           from './routes/income.routes';
 import chartRoutes            from './routes/chart.routes';
 import previewRoutes          from './routes/preview.routes';
+import healthRoutes from './routes/health.routes';
 
 const app  = express();
 const PORT = parseInt(process.env.PORT ?? '4000');
@@ -60,6 +61,7 @@ app.use(express.json({ limit: '100kb' }));   // reject giant payloads
 // For 1000 users × 10 req/min = ~167 rps.  Each worker gets its own bucket.
 // In cluster mode, limits are per-process — that's fine since we keep them loose.
 import rateLimit from 'express-rate-limit';
+app.use('/health', healthRoutes);
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,   // 1 minute
