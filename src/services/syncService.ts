@@ -2,7 +2,6 @@
 import { ethers }                  from 'ethers';
 import { prisma }                  from '..';
 import { registerUserService }     from './registeruser.service';
-import { generationTreeService }   from './generationtree.service';
 import { packageBuyService }       from './packagebuy.service';
 import { directIncomeService }     from './directincome.service';
 import { generationIncomeService } from './generationincome.service';
@@ -68,7 +67,6 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
     try {
       await registerUserService(userAddress, referral, regId);
       await new Promise(r => setTimeout(r, 300));
-      await generationTreeService(userAddress);
       console.log(`✅ [Sync] Registered: ${userAddress} (#${regId})`);
     } catch (err: any) {
       console.warn(`⚠️  [Sync] RegisterEV failed ${userAddress}:`, err.message);

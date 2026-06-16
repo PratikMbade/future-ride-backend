@@ -71,8 +71,8 @@ export const getMe = async(req:Request,res:Response)=>{
         // total community (all descendants in gen tree)
         const communityCount = await countCommunity(dbUser.id);
        
-          const baseUrl      = process.env.FRONTEND_URL ?? 'http://localhost:5173';
-    const referralLink = `${baseUrl}/register?ref=${dbUser.userAddress}`;
+          const baseUrl      = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+    const referralLink = `${baseUrl}/registration?ref=${dbUser.ficonId}`;
  
     // ── 5. referred by (sponsor address) ─────────────────
     // referalAddress is the sponsor's wallet address
@@ -109,27 +109,34 @@ export const getMe = async(req:Request,res:Response)=>{
 
 
 export const getDirectTeam = async (req:Request,res:Response) =>{
-     try {
-    const dbUser = (req as any).dbUser;
- 
+   try {
+    const dbUser  = (req as any).dbUser;
     const page     = Math.max(1, parseInt(req.query.page  as string) || 1);
-    const pageSize = Math.min(50, parseInt(req.query.limit as string) || 20);
+    const pageSize = Math.min(50, parseInt(req.query.limit as string) || 15);
     const skip     = (page - 1) * pageSize;
-    const search   = (req.query.search as string ?? '').toLowerCase().trim();
+    const search   = (req.query.search  as string ?? '').toLowerCase().trim();
+    const pkgFilter = parseInt(req.query.package as string) || 0; // 0 = all
  
-    // base filter — everyone this user referred
-    const baseWhere = {
+    // ── base filter ──────────────────────────────────────
+    const where: any = {
       referalAddress: dbUser.userAddress,
       isRegistered:   true,
-      // optional wallet address search
-      ...(search ? {
-        userAddress: { contains: search, mode: 'insensitive' as const }
-      } : {}),
+      ...(search ? { userAddress: { contains: search, mode: 'insensitive' } } : {}),
     };
+ 
+    // ── package filter ────────────────────────────────────
+    // Filter users who have bought at least the selected package number
+    if (pkgFilter > 0) {
+      where.packages = {
+        some: {
+          packageNumber: pkgFilter,
+        },
+      };
+    }
  
     const [members, total] = await Promise.all([
       prisma.user.findMany({
-        where:   baseWhere,
+        where,
         skip,
         take:    pageSize,
         orderBy: { createdAt: 'desc' },
@@ -139,55 +146,44 @@ export const getDirectTeam = async (req:Request,res:Response) =>{
           contractRegId: true,
           isRegistered:  true,
           createdAt:     true,
-          // highest package
           packages: {
             orderBy: { packageNumber: 'desc' },
             take:    1,
             select:  { packageNumber: true, packageName: true },
           },
-          // direct team size of THIS member
-          _count: {
-            select: { directIncome: true }
-          },
         },
       }),
-      prisma.user.count({ where: baseWhere }),
+      prisma.user.count({ where }),
     ]);
  
-    // count each member's own direct team
-    const memberUserAddresses = members.map(m => m.userAddress);
-    const memberDirectCounts  = await prisma.user.groupBy({
-      by:     ['referalAddress'],
-      where:  {
-        referalAddress: { in: memberUserAddresses },
-        isRegistered:   true,
-      },
+    // sub-team count for each member
+    const memberAddresses = members.map(m => m.userAddress);
+    const subCounts = await prisma.user.groupBy({
+      by:    ['referalAddress'],
+      where: { referalAddress: { in: memberAddresses }, isRegistered: true },
       _count: { _all: true },
     });
- 
-    const directCountMap = new Map(
-      memberDirectCounts.map(r => [r.referalAddress, r._count._all])
-    );
+    const subMap = new Map(subCounts.map(r => [r.referalAddress, r._count._all]));
  
     const rows = members.map((m, idx) => ({
-      id:            m.id,
-      rank:          skip + idx + 1,
-      userAddress:   m.userAddress,
-      contractRegId: m.contractRegId,
-      isRegistered:  m.isRegistered,
-      joinedAt:      m.createdAt.toISOString(),
-      highestPackage: m.packages[0]?.packageNumber  ?? 0,
-      packageName:    m.packages[0]?.packageName    ?? 'None',
-      directTeam:    directCountMap.get(m.userAddress) ?? 0,
+      id:             m.id,
+      rank:           skip + idx + 1,
+      userAddress:    m.userAddress,
+      contractRegId:  m.contractRegId,
+      isRegistered:   m.isRegistered,
+      joinedAt:       m.createdAt.toISOString(),
+      highestPackage: m.packages[0]?.packageNumber ?? 0,
+      packageName:    m.packages[0]?.packageName   ?? 'None',
+      directTeam:     subMap.get(m.userAddress)    ?? 0,
     }));
  
     res.json({
-      success: true,
+      success:    true,
       total,
       page,
       pageSize,
       totalPages: Math.ceil(total / pageSize),
-      members: rows,
+      members:    rows,
     });
  
   } catch (error: any) {

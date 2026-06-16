@@ -84,6 +84,7 @@ model User {
   directTeamCount Int     @default(0)
   totalTeamCount  Int     @default(0)
   isRegistered    Boolean @default(false)
+  ficonId String @unique
 
   sessions        Session[]
   accounts        Account[]
@@ -95,7 +96,7 @@ model User {
   uplineNodes       GenerationTree[] @relation("UplineUser")
   leftNodes         GenerationTree[] @relation("LeftUser")
   rightNodes        GenerationTree[] @relation("RightUser")
-  @@index([userAddress, contractRegId])
+  @@index([ficonId,userAddress, contractRegId])
 }
 
 model Package {

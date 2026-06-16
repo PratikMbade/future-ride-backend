@@ -15,6 +15,7 @@ import {
   lapsIncomeEventListener,
 } from './contract/event-listener';
 import { startSyncScheduler } from './services/syncService';
+import registrationRoutes from './routes/registration.routes';
 dotenv.config();
 
 // ─── Prisma singleton per process ─────────────────────────────────────────────
@@ -94,7 +95,7 @@ app.use('/api/user',         userRoutes);
 app.use('/api/income',       incomeRoutes);
 app.use('/api/charts',       chartRoutes);
 app.use('/api/preview',      previewRoutes);
-
+app.use('/api/register', registrationRoutes);
 // ─── global error handler ─────────────────────────────────────────────────────
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled error:', err.message);

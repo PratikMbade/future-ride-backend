@@ -48,35 +48,45 @@ prisma.$use(async (params, next) => {
 
   return next(params);
 });
+const isProd = process.env.NODE_ENV === 'production';
 
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:4000',
-  secret: process.env.BETTER_AUTH_SECRET,
+  secret:  process.env.BETTER_AUTH_SECRET,
+
   trustedOrigins: [
+    // production
     'https://ficon.space',
     'https://www.ficon.space',
     'https://api.ficon.space',
-        'https://www.api.ficon.space',
     'https://auth.ficon.space',
-    'https://www.auth.ficon.space',
     // dev
-    'http://localhost:3000',
+    'http://localhost:5173',   // ← was missing
     'http://localhost:4000',
+    'http://localhost:3000',
   ],
-   advanced: {
+
+  advanced: {
     cookiePrefix: 'ficon',
-    crossSubDomainCookies: {
-      enabled: true,
-      domain:  '.ficon.space',   // shared across *.ficon.space
-    },
+
+    // cross-subdomain only in production
+    ...(isProd ? {
+      crossSubDomainCookies: {
+        enabled: true,
+        domain:  '.ficon.space',
+      },
+    } : {}),
+
     defaultCookieAttributes: {
-      secure:   true,
+      secure:   isProd,          // ← false in dev (http://localhost)
       httpOnly: true,
-      sameSite: 'none',          // required for cross-subdomain cookies
+      sameSite: isProd ? 'none' : 'lax',  // ← lax in dev
       path:     '/',
     },
   },
+
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
+
   plugins: [
     siwe({
       domain: process.env.FRONTEND_DOMAIN ?? 'localhost:5173',
@@ -84,7 +94,7 @@ export const auth = betterAuth({
       verifyMessage: async ({ message, signature }) => {
         try {
           const siweMessage = new SiweMessage(message);
-          const result = await siweMessage.verify({ signature });
+          const result      = await siweMessage.verify({ signature });
           return result.success;
         } catch {
           return false;
@@ -92,5 +102,4 @@ export const auth = betterAuth({
       },
     }),
   ],
-
 });
