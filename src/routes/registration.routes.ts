@@ -2,12 +2,50 @@
 import { Router, type Request, type Response } from 'express';
 import { requireAuth } from '../middleware/authMiddleware';
 import { prisma } from '..';
+import { auth } from '../lib/auth';
 
 const router = Router();
 
 // ─── GET /api/register/validate/:ficonId ─────────────────
 // Validate a referral FICON ID and return the referrer's info
 // Called live as user types to show referrer details
+// src/routes/registration.routes.ts
+router.get('/info', async (req: Request, res: Response) => {
+  try {
+    const session = await auth.api.getSession({ headers: req.headers as any });
+
+    if (!session?.user) {
+      res.json({ isRegistered: false, userAddress: null, ficonId: null });
+      return;
+    }
+
+    // better-auth stores wallet address in the `name` field
+    // your prisma middleware copies it to userAddress on create
+    const walletAddress = (session.user.name as string)?.toLowerCase();
+
+    if (!walletAddress || !walletAddress.startsWith('0x')) {
+      res.json({ isRegistered: false, userAddress: null, ficonId: null });
+      return;
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where:  { userAddress: walletAddress },   // ← now always defined
+      select: { isRegistered: true, userAddress: true, ficonId: true, contractRegId: true },
+    });
+
+    res.json({
+      isRegistered:  dbUser?.isRegistered  ?? false,
+      userAddress:   dbUser?.userAddress   ?? null,
+      ficonId:       dbUser?.ficonId       ?? null,
+      contractRegId: dbUser?.contractRegId ?? null,
+    });
+
+  } catch (err: any) {
+    console.error('register/info error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 router.get('/validate/:ficonId', requireAuth, async (req: Request, res: Response) => {
   try {
     const { ficonId } = req.params ;
