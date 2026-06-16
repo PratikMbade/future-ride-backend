@@ -13,6 +13,7 @@ import {
   directIncomeEventListener,
   generationEventListener,
   lapsIncomeEventListener,
+  upgradeHoldingEventListener,
 } from './contract/event-listener';
 import { startSyncScheduler } from './services/syncService';
 import registrationRoutes from './routes/registration.routes';
@@ -126,6 +127,7 @@ const server = app.listen(PORT, () => {
   directIncomeEventListener();
   generationEventListener();
   lapsIncomeEventListener();
+  upgradeHoldingEventListener()
   startSyncScheduler(5 * 60 * 1000);
   console.log('✅ Blockchain listeners + sync scheduler started');
 }

@@ -14,6 +14,7 @@ import {
   directIncomeEventListener,
   generationEventListener,
   lapsIncomeEventListener,
+  upgradeHoldingEventListener,
 } from './contract/event-listener';
 import { startSyncScheduler } from './services/syncService';
  
@@ -31,7 +32,7 @@ async function main() {
   directIncomeEventListener();
   generationEventListener();
   lapsIncomeEventListener();
- 
+  upgradeHoldingEventListener();
   // catch-up sync — every 5 minutes
   startSyncScheduler(5 * 60 * 1000);
  
