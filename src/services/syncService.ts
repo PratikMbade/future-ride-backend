@@ -6,6 +6,7 @@ import { packageBuyService }       from './packagebuy.service';
 import { directIncomeService }     from './directincome.service';
 import { generationIncomeService } from './generationincome.service';
 import { lapsIncomeService }       from './lapsincome.service';
+import { upgradeHoldingService }   from './upgradeHolding.service';
 import contractAbi                 from '../contract/contract-abi.json';
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -41,17 +42,12 @@ async function saveLastSyncedBlock(block: number): Promise<void> {
 }
 
 // ─── Step 1: Registrations ────────────────────────────────────────────────────
-// Must run BEFORE packages and income in each batch.
-// A user must exist in DB before any package or income record references them.
 async function syncRegistrations(fromBlock: number, toBlock: number): Promise<void> {
   const events = await contract.queryFilter(
     contract.filters.RegisterEV(), fromBlock, toBlock
   );
   if (events.length === 0) return;
 
-  // Process registrations SEQUENTIALLY — not in parallel.
-  // Reason: if two users register in the same batch and user B referred by
-  // user A, we must create A before B. Sequential guarantees order.
   for (const e of events) {
     const args        = e.args!;
     const userAddress = (args.user    as string).toLowerCase();
@@ -76,8 +72,6 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
 }
 
 // ─── Step 2: Package buys + upgrades ─────────────────────────────────────────
-// Runs AFTER registrations so the user record exists.
-// Both event types write to the same Package table — safe to run in parallel.
 async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
   const [buyEvents, upgradeEvents] = await Promise.all([
     contract.queryFilter(contract.filters.PackageBuyEV(),     fromBlock, toBlock),
@@ -96,15 +90,12 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     const packageNumber = (args.package as ethers.BigNumber).toNumber();
     const txHash        = e.transactionHash.toLowerCase();
 
-    // Check user exists — if registration sync missed them, skip gracefully
     const user = await prisma.user.findUnique({
       where:  { userAddress },
       select: { id: true },
     });
 
     if (!user) {
-      // User not in DB yet — create a minimal record so package can be saved
-      // This handles edge cases where RegisterEV was missed or out of order
       console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package event`);
       try {
         await registerUserService(userAddress, userAddress, 0);
@@ -127,8 +118,6 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
 }
 
 // ─── Step 3: Income events ────────────────────────────────────────────────────
-// Runs AFTER packages — income references package numbers that must exist.
-// All three income types can run in parallel (independent tables).
 async function syncIncome(fromBlock: number, toBlock: number): Promise<void> {
   const [directEvents, genEvents, lapsEvents] = await Promise.all([
     contract.queryFilter(contract.filters.DirectPayEV(),     fromBlock, toBlock),
@@ -194,24 +183,75 @@ async function syncIncome(fromBlock: number, toBlock: number): Promise<void> {
     }
   }
 
-  const total = directSynced + genSynced + lapsSynced;
+  const total       = directSynced + genSynced + lapsSynced;
   const totalEvents = directEvents.length + genEvents.length + lapsEvents.length;
   if (totalEvents > 0)
     console.log(`   Income: ${total}/${totalEvents} synced (direct:${directSynced} gen:${genSynced} laps:${lapsSynced})`);
 }
 
+// ─── Step 4: UpgradeHolding events ───────────────────────────────────────────
+// Runs AFTER income — depends on User + Package existing.
+//
+// Updated event signature:
+//   UpgradeHolding(
+//     address indexed user,      ← genUpline — who accumulates holding
+//     address fromUser,          ← buyer who triggered it (NOT indexed)
+//     uint256 indexed package,
+//     uint256 indexed amount,    ← actual holding amount in wei
+//     uint256 time,              ← block.timestamp
+//     uint256 lvlPay             ← tree level
+//   )
+async function syncUpgradeHolding(fromBlock: number, toBlock: number): Promise<void> {
+  const events = await contract.queryFilter(
+    contract.filters.UpgradeHolding(), fromBlock, toBlock
+  );
+  if (events.length === 0) return;
+
+  let synced = 0;
+  for (const e of events) {
+    const args = e.args!;
+
+    const userAddress     = (args.user     as string).toLowerCase();
+    const fromUserAddress = (args.fromUser as string).toLowerCase();
+    const packageNumber   = (args.package  as ethers.BigNumber).toNumber();
+    const amountWei       = (args.amount   as ethers.BigNumber);
+    const timestamp       = (args.time     as ethers.BigNumber).toNumber();
+    const level           = (args.lvlPay   as ethers.BigNumber).toNumber();
+    const txHash          = e.transactionHash.toLowerCase();
+
+    try {
+      const r = await upgradeHoldingService(
+        userAddress,
+        fromUserAddress,
+        packageNumber,
+        amountWei,
+        timestamp,
+        level,
+        txHash,
+      );
+      if (r) synced++;
+    } catch (err: any) {
+      console.warn(
+        `⚠️  [Sync] UpgradeHolding failed ${userAddress} PKG${packageNumber}:`,
+        err.message
+      );
+    }
+  }
+
+  console.log(`   UpgradeHolding: ${synced}/${events.length} synced (${fromBlock}–${toBlock})`);
+}
+
 // ─── Process one batch in strict dependency order ─────────────────────────────
-// Order matters:
-//   1. Registrations  → creates User records
-//   2. Packages       → creates Package records (needs User)
-//   3. Income         → creates income records (needs User + Package)
+// 1. Registrations → creates User records
+// 2. Packages      → creates Package records  (needs User)
+// 3. Income        → Direct / Gen / Laps      (needs User + Package)
+// 4. UpgradeHolding                           (needs User + Package)
 async function processBatch(fromBlock: number, toBlock: number): Promise<void> {
   console.log(`⏳ [Sync] Batch ${fromBlock}–${toBlock}`);
-
-  // SEQUENTIAL — each step waits for previous to complete
-  await syncRegistrations(fromBlock, toBlock);   // step 1
-  await syncPackages(fromBlock, toBlock);         // step 2 — users now exist
-  await syncIncome(fromBlock, toBlock);           // step 3 — packages now exist
+  await syncRegistrations(fromBlock, toBlock);    // step 1
+  await syncPackages(fromBlock, toBlock);          // step 2
+  await syncIncome(fromBlock, toBlock);            // step 3
+  await syncUpgradeHolding(fromBlock, toBlock);    // step 4
 }
 
 // ─── Main sync runner ─────────────────────────────────────────────────────────
@@ -243,7 +283,7 @@ export async function runSync(): Promise<void> {
     while (from <= currentBlock) {
       const to = Math.min(from + BATCH_SIZE - 1, currentBlock);
       await processBatch(from, to);
-      await saveLastSyncedBlock(to);  // checkpoint after each batch
+      await saveLastSyncedBlock(to);
       from = to + 1;
     }
 

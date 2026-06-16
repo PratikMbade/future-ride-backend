@@ -362,6 +362,12 @@
                 "type": "address"
             },
             {
+                "indexed": false,
+                "internalType": "address",
+                "name": "fromUser",
+                "type": "address"
+            },
+            {
                 "indexed": true,
                 "internalType": "uint256",
                 "name": "package",
@@ -371,6 +377,18 @@
                 "indexed": true,
                 "internalType": "uint256",
                 "name": "amount",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "time",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "lvlPay",
                 "type": "uint256"
             }
         ],

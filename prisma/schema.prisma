@@ -96,6 +96,8 @@ model User {
   uplineNodes       GenerationTree[] @relation("UplineUser")
   leftNodes         GenerationTree[] @relation("LeftUser")
   rightNodes        GenerationTree[] @relation("RightUser")
+  upgradeHoldings  UpgradeHolding[] @relation("UserUpgradeHoldings")
+
   @@index([ficonId,userAddress, contractRegId])
 }
 
@@ -183,4 +185,24 @@ model SyncMeta{
   key String @id
   value String
   updatedAt DateTime @updatedAt
+}
+
+model UpgradeHolding {
+  id              String   @id @default(uuid())
+
+  userId          String
+  user            User     @relation("UserUpgradeHoldings", fields: [userId], references: [id])
+  userAddress     String
+  fromUserAddress String
+  packageNumber   Int
+  amount          String
+  level           Int
+  timestamp       Int
+  transactionHash String
+  createdAt       DateTime @default(now())
+
+  @@unique([transactionHash, packageNumber, userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userAddress])
+  @@index([fromUserAddress])
 }

@@ -8,6 +8,7 @@ import { generationIncomeService } from '../services/generationincome.service';
 import { lapsIncomeService }       from '../services/lapsincome.service';
 import { ethers }                  from 'ethers';
 import * as dotenv from 'dotenv';
+import { upgradeHoldingService } from '../services/upgradeHolding.service';
 dotenv.config();
 
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS!;
@@ -259,6 +260,52 @@ export const lapsIncomeEventListener = () => {
           );
         } catch (err: any) {
           console.error('LapsPayEV error:', err.message);
+        }
+      });
+    },
+  });
+};
+
+export const upgradeHoldingEventListener = () => {
+  reconnectSilent({
+    wssUrl:           ALCHEMY_WSS,
+    contractAddress:  CONTRACT_ADDRESS,
+    abi:              contractAbi,
+    label:            'UpgradeHolding',
+    onReady: (_, contract) => {
+      contract.removeAllListeners('UpgradeHolding');
+ 
+      contract.on('UpgradeHolding', async (
+        user:      string,           // indexed — genUpline (receiver)
+        fromUser:  string,           // not indexed — the buyer
+        pkg:       ethers.BigNumber, // indexed — package number
+        amount:    ethers.BigNumber, // indexed — holding amount in wei
+        time:      ethers.BigNumber, // block.timestamp
+        lvlPay:    ethers.BigNumber, // tree level
+        event:     ethers.Event,
+      ) => {
+        const packageNumber = pkg.toNumber();
+        const level         = lvlPay.toNumber();
+        const timestamp     = time.toNumber();
+        const txHash        = event.transactionHash;
+ 
+        console.log(
+          `📥 UpgradeHolding: ${user} ← ${fromUser} PKG${packageNumber} LVL${level} ` +
+          `+${ethers.utils.formatUnits(amount, 18)} USDT tx:${txHash}`
+        );
+ 
+        try {
+          await upgradeHoldingService(
+            user,        // genUpline — who gets the holding
+            fromUser,    // buyer who triggered it
+            packageNumber,
+            amount,      // BigNumber in wei — service converts to string
+            timestamp,
+            level,
+            txHash,
+          );
+        } catch (err: any) {
+          console.error('UpgradeHolding error:', err.message);
         }
       });
     },
