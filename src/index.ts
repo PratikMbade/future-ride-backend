@@ -49,7 +49,18 @@ app.use(compression());             // gzip all JSON responses
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 app.use(cors({
-  origin:      process.env.FRONTEND_URL,
+  origin: (origin, callback) => {
+    const allowed = [
+      'https://ficon.space',
+      'https://www.ficon.space',
+      'http://localhost:3000',
+    ];
+    if (!origin || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked: ${origin}`));
+    }
+  },
   credentials: true,
 }));
 
