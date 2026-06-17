@@ -13,54 +13,80 @@ interface TreeNodeResponse {
 }
 
 // ─────────────────────────────────────────────────────────
-//  Fetch ALL tree nodes in ONE query, then build in memory
-//  This avoids N+1 recursive DB calls
+//  Targeted subtree fetch — only pulls the nodes actually
+//  needed for the requested depth, not the whole tree table.
+//
+//  Your UI (buildGraph) only ever renders 3 levels at once
+//  (root → children → grandchildren), so even on a tree with
+//  100k users this never fetches more than a few dozen rows.
+//
+//  Approach: breadth-first expansion, one DB round-trip per
+//  level instead of one giant findMany() for the whole table.
 // ─────────────────────────────────────────────────────────
-async function buildFullTree(
+async function buildSubtree(
   rootUserId: string,
-  maxDepth:   number = 10,
+  maxDepth:   number,
 ): Promise<TreeNodeResponse | null> {
 
-  // 1. pull ALL GenerationTree rows in one query
-  const allTreeNodes = await prisma.generationTree.findMany({
-    select: {
-      uplineUserId:  true,
-      leftUserId:    true,
-      rightUserId:   true,
-    },
+  // level 0: just the root's tree row + user row
+  const rootTreeRow = await prisma.generationTree.findUnique({
+    where:  { uplineUserId: rootUserId },
+    select: { uplineUserId: true, leftUserId: true, rightUserId: true },
   });
 
-  // 2. pull ALL users referenced in the tree in one query
-  const allUserIds = new Set<string>();
-  for (const node of allTreeNodes) {
-    allUserIds.add(node.uplineUserId);
-    if (node.leftUserId)  allUserIds.add(node.leftUserId);
-    if (node.rightUserId) allUserIds.add(node.rightUserId);
+  const rootUser = await prisma.user.findUnique({
+    where:  { id: rootUserId },
+    select: {
+      id: true, userAddress: true, referalAddress: true,
+      contractRegId: true, isRegistered: true,
+    },
+  });
+  if (!rootUser) return null;
+
+  // collect userIds level by level — never more than ~2^depth ids in flight
+  const treeRowMap = new Map<string, typeof rootTreeRow>();
+  if (rootTreeRow) treeRowMap.set(rootUserId, rootTreeRow);
+
+  const userMap = new Map([[rootUser.id, rootUser]]);
+
+  let frontier: string[] = [];
+  if (rootTreeRow?.leftUserId)  frontier.push(rootTreeRow.leftUserId);
+  if (rootTreeRow?.rightUserId) frontier.push(rootTreeRow.rightUserId);
+
+  for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
+    // fetch this level's tree rows + user rows in 2 queries (not per-node)
+    const [treeRows, users] = await Promise.all([
+      prisma.generationTree.findMany({
+        where:  { uplineUserId: { in: frontier } },
+        select: { uplineUserId: true, leftUserId: true, rightUserId: true },
+      }),
+      prisma.user.findMany({
+        where:  { id: { in: frontier } },
+        select: {
+          id: true, userAddress: true, referalAddress: true,
+          contractRegId: true, isRegistered: true,
+        },
+      }),
+    ]);
+
+    for (const row of treeRows) treeRowMap.set(row.uplineUserId, row);
+    for (const u of users)      userMap.set(u.id, u);
+
+    // build next frontier from this level's children
+    const next: string[] = [];
+    for (const row of treeRows) {
+      if (row.leftUserId)  next.push(row.leftUserId);
+      if (row.rightUserId) next.push(row.rightUserId);
+    }
+    frontier = next;
   }
 
-  const allUsers = await prisma.user.findMany({
-    where: { id: { in: Array.from(allUserIds) } },
-    select: {
-      id:             true,
-      userAddress:    true,
-      referalAddress: true,
-      contractRegId:  true,
-      isRegistered:   true,
-    },
-  });
-
-  // 3. build lookup maps — O(1) access
-  const userMap   = new Map(allUsers.map(u => [u.id, u]));
-  const treeMap   = new Map(allTreeNodes.map(n => [n.uplineUserId, n]));
-
-  // 4. recursive builder — pure in-memory, no more DB calls
+  // build response tree purely from the in-memory maps (no more DB calls)
   function buildNode(userId: string, depth: number): TreeNodeResponse | null {
     if (depth > maxDepth) return null;
-
     const user = userMap.get(userId);
     if (!user) return null;
-
-    const node = treeMap.get(userId);
+    const row = treeRowMap.get(userId);
 
     return {
       id:              user.id,
@@ -68,8 +94,8 @@ async function buildFullTree(
       referralAddress: user.referalAddress ?? '',
       contractRegId:   user.contractRegId ?? null,
       isRegistered:    user.isRegistered,
-      left:  node?.leftUserId  ? buildNode(node.leftUserId,  depth + 1) : null,
-      right: node?.rightUserId ? buildNode(node.rightUserId, depth + 1) : null,
+      left:  row?.leftUserId  ? buildNode(row.leftUserId,  depth + 1) : null,
+      right: row?.rightUserId ? buildNode(row.rightUserId, depth + 1) : null,
     };
   }
 
@@ -78,42 +104,53 @@ async function buildFullTree(
 
 // ─────────────────────────────────────────────────────────
 //  GET /api/tree/:userAddress
-//  Returns the full subtree rooted at the given user
 // ─────────────────────────────────────────────────────────
 export const getGenerationTree = async (req: Request, res: Response) => {
   try {
-    const userAddress = String(req.params.userAddress ?? '').toLowerCase().trim();
-    const maxDepth    = Math.min(parseInt(req.query.depth as string) || 10, 15);
+    const raw = req.params.userAddress;
 
-    if (!userAddress || !userAddress.startsWith('0x')) {
-      res.status(400).json({ error: 'Valid userAddress is required' });
+    if (
+      !raw || typeof raw !== 'string' ||
+      raw === 'undefined' || raw === 'null' || raw.trim() === ''
+    ) {
+      res.status(400).json({ error: 'userAddress is required', received: raw ?? null });
       return;
     }
 
-    // find the user
+    const userAddress = raw.toLowerCase().trim();
+
+    const isValidEvmAddress = /^0x[a-f0-9]{40}$/.test(userAddress);
+    if (!isValidEvmAddress) {
+      res.status(400).json({ error: 'Invalid wallet address format', received: raw });
+      return;
+    }
+
+    const maxDepthRaw = parseInt(req.query.depth as string);
+    const maxDepth     = Number.isFinite(maxDepthRaw)
+      ? Math.min(Math.max(maxDepthRaw, 1), 15)
+      : 3; // ← default matches your UI's actual render depth (root+2+4)
+
     const user = await prisma.user.findUnique({
       where:  { userAddress },
       select: { id: true, isRegistered: true },
     });
 
     if (!user) {
-      res.status(404).json({ error: `User ${userAddress} not found` });
+      res.status(404).json({
+        error: `No registered user found for address ${userAddress}`,
+        code:  'USER_NOT_FOUND',
+      });
       return;
     }
 
-    // build tree
-    const tree = await buildFullTree(user.id, maxDepth);
+    const tree = await buildSubtree(user.id, maxDepth);
 
     if (!tree) {
-      res.status(404).json({ error: 'Generation tree not found for this user' });
+      res.status(404).json({ error: 'Generation tree not found for this user', code: 'TREE_NOT_FOUND' });
       return;
     }
 
-    res.status(200).json({
-      success:    true,
-      userAddress,
-      tree,
-    });
+    res.status(200).json({ success: true, userAddress, tree });
 
   } catch (error: any) {
     console.error('getGenerationTree error:', error.message);
