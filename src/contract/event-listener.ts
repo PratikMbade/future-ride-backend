@@ -9,11 +9,22 @@ import { lapsIncomeService }       from '../services/lapsincome.service';
 import { ethers }                  from 'ethers';
 import * as dotenv from 'dotenv';
 import { upgradeHoldingService } from '../services/upgradeHolding.service';
+import { queueTxEvent } from '../utils/txEventQueue';
 dotenv.config();
 
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS!;
 const ALCHEMY_WSS      = process.env.ALCHEMY_WSS!;
 
+// All 6 listeners now route their actual work through queueTxEvent instead
+// of running immediately inside the contract.on(...) callback. A single
+// registration transaction emits RegisterEV + PackageBuyEV + DirectPayEV +
+// GenerationPayEV (and potentially LapsPayEV/UpgradeHolding) all in ONE tx —
+// these arrive over the WebSocket as independent, unordered pushes. Without
+// the queue, PackageBuyEV's handler could (and did) run before RegisterEV's
+// had finished creating the user row, causing "User not found in DB"
+// failures. queueTxEvent buffers all events sharing a txHash and runs them
+// in a fixed priority order (RegisterEV first, always) once a brief window
+// has passed — see utils/txEventQueue.ts for the full explanation.
 
 export const registrationEventListener = () => {
   reconnectSilent({
@@ -27,17 +38,18 @@ export const registrationEventListener = () => {
         referral: string,
         time:     ethers.BigNumber,
         regId:    ethers.BigNumber,
+        event:    ethers.Event,
       ) => {
         const id = regId.toNumber();
+        const txHash = event.transactionHash;
         console.log(`📥 RegisterEV: ${user} ref:${referral} id:${id}`);
-        try {
+
+        queueTxEvent(txHash, 'RegisterEV', async () => {
           await registerUserService(user, referral, id);
           // wait 2s — let contract state finalise before reading InternalGenStr
           await new Promise(r => setTimeout(r, 2000));
           await generationTreeService(user);
-        } catch (err: any) {
-          console.error('RegisterEV error:', err.message);
-        }
+        });
       });
     },
   });
@@ -60,21 +72,19 @@ export const packageBuyEventListener = () => {
       contract.removeAllListeners('PackageBuyEV');
 
       contract.on('PackageBuyEV', async (
-        user:  string,
-        pkg:   ethers.BigNumber,
-        time:  ethers.BigNumber,
-                currentId: ethers.BigNumber,
-
-        event: ethers.Event,
+        user:      string,
+        pkg:       ethers.BigNumber,
+        time:      ethers.BigNumber,
+        currentId: ethers.BigNumber,
+        event:     ethers.Event,
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
         console.log(`📥 PackageBuyEV: ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
-        try {
-          await packageBuyService(user.toLowerCase(), packageNumber,currentId.toNumber(), txHash);
-        } catch (err: any) {
-          console.error('PackageBuyEV error:', err.message);
-        }
+
+        queueTxEvent(txHash, 'PackageBuyEV', async () => {
+          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash);
+        });
       });
     },
   });
@@ -97,21 +107,20 @@ export const packageUpgradeEventListener = () => {
       contract.removeAllListeners('PackageUpgradeEV');
 
       contract.on('PackageUpgradeEV', async (
-        user:  string,
-        pkg:   ethers.BigNumber,
-        time:  ethers.BigNumber,
+        user:      string,
+        pkg:       ethers.BigNumber,
+        time:      ethers.BigNumber,
         currentId: ethers.BigNumber,
-        event: ethers.Event,
+        event:     ethers.Event,
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
         console.log(`📥 PackageUpgradeEV (auto): ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
-        try {
+
+        queueTxEvent(txHash, 'PackageUpgradeEV', async () => {
           // same service — packageBuyService is idempotent
-          await packageBuyService(user.toLowerCase(), packageNumber,currentId.toNumber(),txHash);
-        } catch (err: any) {
-          console.error('PackageUpgradeEV error:', err.message);
-        }
+          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash);
+        });
       });
     },
   });
@@ -148,11 +157,10 @@ export const directIncomeEventListener = () => {
         const timestamp     = time.toNumber();
         const txHash        = event.transactionHash;
         console.log(`📥 DirectPayEV: ${from}→${to} PKG${packageNumber} ${amountUsdt} USDT`);
-        try {
+
+        queueTxEvent(txHash, 'DirectPayEV', async () => {
           await directIncomeService(from, to, amountUsdt, packageNumber, timestamp, txHash);
-        } catch (err: any) {
-          console.error('DirectPayEV error:', err.message);
-        }
+        });
       });
     },
   });
@@ -194,7 +202,8 @@ export const generationEventListener = () => {
         const timestamp     = time.toNumber();
         const txHash        = event.transactionHash;
         console.log(`📥 GenerationPayEV: ${originalUser}→${to} PKG${packageNumber} LVL${level} ${amountUsdt} USDT`);
-        try {
+
+        queueTxEvent(txHash, 'GenerationPayEV', async () => {
           await generationIncomeService(
             from,          // contract address (address(this))
             to,            // recipient upline
@@ -205,9 +214,7 @@ export const generationEventListener = () => {
             txHash,
             originalUser,  // actual buyer
           );
-        } catch (err: any) {
-          console.error('GenerationPayEV error:', err.message);
-        }
+        });
       });
     },
   });
@@ -250,7 +257,8 @@ export const lapsIncomeEventListener = () => {
         const timestamp     = time.toNumber();
         const txHash        = event.transactionHash;
         console.log(`📥 LapsPayEV: ${lapAdd} lapsed → paid ${to} PKG${packageNumber} LVL${level} ${amountUsdt} USDT`);
-        try {
+
+        queueTxEvent(txHash, 'LapsPayEV', async () => {
           await lapsIncomeService(
             from,           // contract address
             to,             // who actually received the payment
@@ -261,9 +269,7 @@ export const lapsIncomeEventListener = () => {
             txHash,
             lapAdd,         // who was skipped
           );
-        } catch (err: any) {
-          console.error('LapsPayEV error:', err.message);
-        }
+        });
       });
     },
   });
@@ -277,7 +283,7 @@ export const upgradeHoldingEventListener = () => {
     label:            'UpgradeHolding',
     onReady: (_, contract) => {
       contract.removeAllListeners('UpgradeHolding');
- 
+
       contract.on('UpgradeHolding', async (
         user:      string,           // indexed — genUpline (receiver)
         fromUser:  string,           // not indexed — the buyer
@@ -291,13 +297,13 @@ export const upgradeHoldingEventListener = () => {
         const level         = lvlPay.toNumber();
         const timestamp     = time.toNumber();
         const txHash        = event.transactionHash;
- 
+
         console.log(
           `📥 UpgradeHolding: ${user} ← ${fromUser} PKG${packageNumber} LVL${level} ` +
           `+${ethers.utils.formatUnits(amount, 18)} USDT tx:${txHash}`
         );
- 
-        try {
+
+        queueTxEvent(txHash, 'UpgradeHolding', async () => {
           await upgradeHoldingService(
             user,        // genUpline — who gets the holding
             fromUser,    // buyer who triggered it
@@ -307,9 +313,7 @@ export const upgradeHoldingEventListener = () => {
             level,
             txHash,
           );
-        } catch (err: any) {
-          console.error('UpgradeHolding error:', err.message);
-        }
+        });
       });
     },
   });
