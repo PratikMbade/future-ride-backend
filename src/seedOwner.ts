@@ -102,4 +102,4 @@ export async function seedOwner(ownerAddress: string) {
   }
 }
 
-seedOwner("0xA30224CA6A6004369114F6A027e8A829EDcDa501");
+seedOwner("0x0b0068c773d126f93Bba4862e3D50731E3e753F3");
