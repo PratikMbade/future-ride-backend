@@ -71,7 +71,7 @@ export const packageBuyEventListener = () => {
         const txHash        = event.transactionHash;
         console.log(`📥 PackageBuyEV: ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
         try {
-          await packageBuyService(user, packageNumber,currentId.toNumber(), txHash);
+          await packageBuyService(user.toLowerCase(), packageNumber,currentId.toNumber(), txHash);
         } catch (err: any) {
           console.error('PackageBuyEV error:', err.message);
         }
@@ -108,7 +108,7 @@ export const packageUpgradeEventListener = () => {
         console.log(`📥 PackageUpgradeEV (auto): ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
         try {
           // same service — packageBuyService is idempotent
-          await packageBuyService(user, packageNumber,currentId.toNumber(),txHash);
+          await packageBuyService(user.toLowerCase(), packageNumber,currentId.toNumber(),txHash);
         } catch (err: any) {
           console.error('PackageUpgradeEV error:', err.message);
         }

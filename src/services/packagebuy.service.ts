@@ -10,6 +10,8 @@ export const packageBuyService = async (
 ) => {
   try {
     const normalizedAddress = userAddress.toLowerCase();
+    console.log('normalizedAddress',normalizedAddress);
+    console.log('userAddress',userAddress);
     const normalizedTxHash  = transactionHash.toLowerCase();
 
     // 1. find user
