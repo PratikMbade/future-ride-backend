@@ -2,31 +2,27 @@
 import express          from 'express';
 import cors             from 'cors';
 import { toNodeHandler } from 'better-auth/node';
-import { PrismaClient } from '@prisma/client';
 import * as dotenv      from 'dotenv';
 import helmet           from 'helmet';
 import compression      from 'compression';
-import {
-  registrationEventListener,
-  packageBuyEventListener,
-  packageUpgradeEventListener,
-  directIncomeEventListener,
-  generationEventListener,
-  lapsIncomeEventListener,
-  upgradeHoldingEventListener,
-} from './contract/event-listener';
-import { startSyncScheduler } from './services/syncService';
 import registrationRoutes from './routes/registration.routes';
 dotenv.config();
 
-// ─── Prisma singleton per process ─────────────────────────────────────────────
-export const prisma = new PrismaClient({
-  log: ['warn', 'error'],
-  // Connection pool: keep 5 idle + allow burst to 10 per API worker process.
-  // With 2 cluster workers → max 20 PG connections total. Stays well inside
-  // DigitalOcean's managed PG default of 25 max_connections.
-  datasources: { db: { url: process.env.DATABASE_URL } },
-});
+// ─── Prisma — imported from a standalone module, NOT defined here ───────────
+// PREVIOUSLY this file created `export const prisma = new PrismaClient(...)`
+// directly, and other files (event-listener.ts etc.) imported it via
+// `import { prisma } from '../index'`. That import chain executed THIS
+// ENTIRE FILE — Express setup, app.listen(), the WORKER_ROLE check, all of
+// it — every time anything imported prisma from here. When worker.ts
+// imports event-listener.ts, which imported prisma from index.ts, it
+// silently re-ran this file's own blockchain-listener startup INSIDE the
+// worker process, on top of worker.ts's own main() doing the same thing —
+// causing every listener to open multiple times. prisma now lives in its
+// own side-effect-free module; this file re-exports it for any code that
+// still expects `prisma` from here, but no other file should import prisma
+// from this path going forward — import from './lib/prisma' directly.
+import { prisma } from './lib/prisma';
+export { prisma };
 
 import { auth }               from './lib/auth';
 import dashboardRoutes        from './routes/dashboardRoutes';
@@ -117,21 +113,6 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 // ─── start ────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`🚀 [API] Worker PID ${process.pid} listening on port ${PORT}`);
-
-  // ONLY start blockchain listeners if running as a single process (dev mode).
-  // In production, PM2 runs worker.ts separately.
- if (process.env.WORKER_ROLE !== 'api') {
-  registrationEventListener();
-  packageBuyEventListener();
-  packageUpgradeEventListener();
-  directIncomeEventListener();
-  generationEventListener();
-  lapsIncomeEventListener();
-  upgradeHoldingEventListener()
-  startSyncScheduler(5 * 60 * 1000);
-  console.log('✅ Blockchain listeners + sync scheduler started');
-}
-
 });
 
 // ─── graceful shutdown ────────────────────────────────────────────────────────

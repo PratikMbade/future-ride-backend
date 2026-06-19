@@ -166,3 +166,45 @@ export const getUserPackages = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+
+export const getPackageHistory = async (req: Request, res: Response) => {
+  try {
+    const dbUser = (req as any).dbUser;
+ 
+    const packages = await prisma.package.findMany({
+      where:   { userId: dbUser.id },
+      orderBy: { packageNumber: 'asc' },
+      select: {
+        id:                   true,
+        packageNumber:        true,
+        packageName:          true,
+        packageAmount:        true,
+        packageContractBuyId: true,
+        createdAt:            true,
+        tranxHash:            true,
+      },
+    });
+ 
+    const rows = packages.map(p => ({
+      id:                   p.id,
+      packageContractBuyId: p.packageContractBuyId,
+      packageNumber:        p.packageNumber,
+      packageName:          p.packageName,
+      packageAmount:        p.packageAmount,
+      buyDate:              p.createdAt.toISOString(),
+      transactionHash:      p.tranxHash,
+    }));
+ 
+    res.json({
+      success: true,
+      total:   rows.length,
+      packages: rows,
+    });
+ 
+  } catch (error: any) {
+    console.error('package-history error:', error.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+ 

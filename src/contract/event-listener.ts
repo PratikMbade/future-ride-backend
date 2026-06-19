@@ -63,13 +63,15 @@ export const packageBuyEventListener = () => {
         user:  string,
         pkg:   ethers.BigNumber,
         time:  ethers.BigNumber,
+                currentId: ethers.BigNumber,
+
         event: ethers.Event,
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
-        console.log(`📥 PackageBuyEV: ${user} PKG${packageNumber} tx:${txHash}`);
+        console.log(`📥 PackageBuyEV: ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
         try {
-          await packageBuyService(user, packageNumber, txHash);
+          await packageBuyService(user, packageNumber,currentId.toNumber(), txHash);
         } catch (err: any) {
           console.error('PackageBuyEV error:', err.message);
         }
@@ -98,14 +100,15 @@ export const packageUpgradeEventListener = () => {
         user:  string,
         pkg:   ethers.BigNumber,
         time:  ethers.BigNumber,
+        currentId: ethers.BigNumber,
         event: ethers.Event,
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
-        console.log(`📥 PackageUpgradeEV (auto): ${user} PKG${packageNumber} tx:${txHash}`);
+        console.log(`📥 PackageUpgradeEV (auto): ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
         try {
           // same service — packageBuyService is idempotent
-          await packageBuyService(user, packageNumber, txHash);
+          await packageBuyService(user, packageNumber,currentId.toNumber(),txHash);
         } catch (err: any) {
           console.error('PackageUpgradeEV error:', err.message);
         }

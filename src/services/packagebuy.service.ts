@@ -5,6 +5,7 @@ import { getPackageInfo } from "../utils/getPackageInfo";
 export const packageBuyService = async (
   userAddress: string,
   packageNumber: number,
+  packageContractBuyId:number,
   transactionHash: string,
 ) => {
   try {
@@ -56,6 +57,7 @@ export const packageBuyService = async (
         packageNumber,
         packageName:         packageInfo.name,
         packageAmount:       packageInfo.amount,
+        packageContractBuyId:packageContractBuyId,
         packageBuyTranxHash: normalizedTxHash,
         tranxHash:           normalizedTxHash,
         userId:              user.id,

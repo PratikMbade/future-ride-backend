@@ -51,6 +51,16 @@ export const packageInfo:PackageInfo[] = [
     name: "Package10",
     amount: 2560,
   },
+    {
+    packageNumber: 11,
+    name: "Package11",
+    amount: 5120,
+  },
+    {
+    packageNumber: 12,
+    name: "Package12",
+    amount: 10240,
+  },
 ];
 
 export const getPackageInfo = (packageNumber: number) =>

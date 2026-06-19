@@ -1,4 +1,3 @@
-
 import { Request, Response } from "express";
 import { prisma } from "..";
 
@@ -110,6 +109,57 @@ async function buildWeeklyIncome(userId: string, now: Date) {
   return weeks;
 }
 
+// ─── today's income builder ───────────────────────────────
+// Same timestamp-type quirk as buildWeeklyIncome: direct/generation/laps
+// store timestamp as String, upgradeHolding stores it as Int. Reuses the
+// same fetch-all-then-filter-in-JS approach rather than adding 4 more
+// per-request DB queries with range filters.
+async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(now);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const tsFrom = Math.floor(dayStart.getTime() / 1000);
+  const tsTo   = Math.floor(dayEnd.getTime()   / 1000);
+
+  const inRange = (ts: string) => {
+    const n = parseInt(ts ?? '0');
+    return n >= tsFrom && n <= tsTo;
+  };
+  const upgradeInRange = (ts: number) => ts >= tsFrom && ts <= tsTo;
+
+  const [directRecs, genRecs, lapsRecs, upgradeRecs] = await Promise.all([
+    prisma.directIncome.findMany({
+      where:  { userId },
+      select: { amount: true, timestamp: true },
+    }),
+    prisma.generationIncome.findMany({
+      where:  { userId },
+      select: { amount: true, timestamp: true },
+    }),
+    prisma.lapsIncome.findMany({
+      where:  { userId },
+      select: { amount: true, timestamp: true },
+    }),
+    prisma.upgradeHolding.findMany({
+      where:  { userId },
+      select: { amount: true, timestamp: true }, // timestamp is Int here
+    }),
+  ]);
+
+  const todaysDirect     = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
+  const todaysGeneration = sumAmount(genRecs.filter(r => inRange(r.timestamp)));
+  const todaysLaps       = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
+  const todaysUpgrade    = sumAmount(
+    upgradeRecs
+      .filter(r => upgradeInRange(r.timestamp))
+      .map(r => ({ amount: r.amount }))
+  );
+
+  return todaysDirect + todaysGeneration + todaysLaps + todaysUpgrade;
+}
+
 // ─── GET /api/dashboard/me ────────────────────────────────
 export const getMe = async (req: Request, res: Response) => {
   try {
@@ -132,7 +182,7 @@ export const getMe = async (req: Request, res: Response) => {
 
     // ── 4. referral link ──────────────────────────────────
     const baseUrl      = process.env.FRONTEND_URL ?? 'http://localhost:3000';
-    const referralLink = `${baseUrl}/registration?ref=${dbUser.ficonId ?? ''}`;
+    const referralLink = `${baseUrl}/registration?ref=${dbUser.contractRegId ?? ''}`;
 
     // ── 5. sponsor ────────────────────────────────────────
     const referredBy =
@@ -141,7 +191,8 @@ export const getMe = async (req: Request, res: Response) => {
     // ── 6. income totals ──────────────────────────────────
     // All income models use userId relation — no toAddress field in schema
     // timestamp is String in direct/gen/laps, Int in upgradeHolding
-    const [directRecs, genRecs, lapsRecs, upgradeRecs] = await Promise.all([
+    // LostIncome also uses userId relation, amount stored as String like the others
+    const [directRecs, genRecs, lapsRecs, upgradeRecs, lostRecs] = await Promise.all([
       prisma.directIncome.findMany({
         where:  { userId: dbUser.id },
         select: { amount: true },
@@ -158,15 +209,27 @@ export const getMe = async (req: Request, res: Response) => {
         where:  { userId: dbUser.id },
         select: { amount: true },
       }),
+      prisma.lostIncome.findMany({
+        where:  { userId: dbUser.id },
+        select: { amount: true },
+      }),
     ]);
 
     const directIncome         = sumAmount(directRecs);
     const generationIncome     = sumAmount(genRecs);
     const lapsIncome           = sumAmount(lapsRecs);
     const upgradeHoldingIncome = sumAmount(upgradeRecs);
+    const lostIncome           = sumAmount(lostRecs);
+    // NOTE: lostIncome is intentionally NOT added into totalIncome — it
+    // represents income the user MISSED OUT on (redirected elsewhere due
+    // to a laps event), not income actually received. Including it in
+    // the total would overstate what the user actually earned.
     const totalIncome          = directIncome + generationIncome + lapsIncome + upgradeHoldingIncome;
 
-    // ── 7. weekly chart data ──────────────────────────────
+    // ── 7. today's income ─────────────────────────────────
+    const todaysIncome = await buildTodaysIncome(dbUser.id, new Date());
+
+    // ── 8. weekly chart data ──────────────────────────────
     const weeklyData = await buildWeeklyIncome(dbUser.id, new Date());
 
     res.status(200).json({
@@ -191,7 +254,9 @@ export const getMe = async (req: Request, res: Response) => {
       generationIncome,
       lapsIncome,
       upgradeHoldingIncome,
+      lostIncome,
       totalIncome,
+      todaysIncome,
 
       // chart
       weeklyData,

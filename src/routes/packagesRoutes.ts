@@ -1,7 +1,7 @@
 
 import { Router } from 'express';
 import {  requireAuth, requireRegistered } from '../middleware/authMiddleware';
-import { buyPackage, getUserPackages } from '../controller/packagebuy.controller';
+import { buyPackage, getPackageHistory, getUserPackages } from '../controller/packagebuy.controller';
 
 const router = Router();
 
@@ -13,5 +13,7 @@ router.get('/', getUserPackages);
 
 // POST /api/packages/buy   — record a package buy (fallback if event missed)
 router.post('/buy', buyPackage);
+
+router.get('/package-history',getPackageHistory);
 
 export default router;

@@ -84,7 +84,6 @@ model User {
   directTeamCount Int     @default(0)
   totalTeamCount  Int     @default(0)
   isRegistered    Boolean @default(false)
-  ficonId String @unique
 
   sessions        Session[]
   accounts        Account[]
@@ -97,8 +96,10 @@ model User {
   leftNodes         GenerationTree[] @relation("LeftUser")
   rightNodes        GenerationTree[] @relation("RightUser")
   upgradeHoldings  UpgradeHolding[] @relation("UserUpgradeHoldings")
+  lostIncome  LostIncome[] @relation("UserLostIncome")
 
-  @@index([ficonId,userAddress, contractRegId])
+
+  @@index([userAddress, contractRegId])
 }
 
 model Package {
@@ -106,6 +107,7 @@ model Package {
   packageNumber       Int
   packageName         String
   packageAmount       Int
+  packageContractBuyId Int?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   userId              String
@@ -206,3 +208,25 @@ model UpgradeHolding {
   @@index([userAddress])
   @@index([fromUserAddress])
 }
+
+
+model LostIncome{
+  id String @id @default(cuid())
+
+  userId String
+  user User @relation("UserLostIncome",fields: [userId],references: [id])
+  lapsedAddress String
+  redirectedToAddress String
+  packageNumber    Int
+  packageName      String
+  amount           String  
+  level            Int  
+  timestamp        String 
+  transactionHash  String
+  createdAt        DateTime @default(now())
+  @@unique([transactionHash, packageNumber, lapsedAddress], name: "transactionHash_packageNumber_lapsedAddress")
+
+  @@index([userId])
+  @@index([lapsedAddress])
+}
+

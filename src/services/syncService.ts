@@ -18,7 +18,38 @@ const contract = new ethers.Contract(
   provider
 );
 
-const BATCH_SIZE = 2000;
+// ↓ reduced from 2000 — Alchemy's BNB mainnet tier rejects wide eth_getLogs
+// ranges even well under 2000 blocks, especially with topic filters applied.
+const BATCH_SIZE = 500;
+
+// ─── safe queryFilter wrapper — auto-retries with halved range on
+//     Alchemy's "invalid block range params" (-32000) error ──────────────────
+async function safeQueryFilter(
+  filter:    ethers.EventFilter,
+  fromBlock: number,
+  toBlock:   number,
+  depth = 0,
+): Promise<ethers.Event[]> {
+  try {
+    return await contract.queryFilter(filter, fromBlock, toBlock);
+  } catch (err: any) {
+    const isRangeError =
+      err?.code === 'SERVER_ERROR' &&
+      (err?.error?.code === -32000 || /invalid block range/i.test(err?.error?.message ?? ''));
+
+    if (isRangeError && fromBlock < toBlock && depth < 8) {
+      const mid = Math.floor((fromBlock + toBlock) / 2);
+      console.warn(`⚠️  [Sync] Range rejected (${fromBlock}-${toBlock}, depth ${depth}) — splitting at ${mid}`);
+
+      const firstHalf  = await safeQueryFilter(filter, fromBlock, mid,     depth + 1);
+      const secondHalf = await safeQueryFilter(filter, mid + 1,   toBlock, depth + 1);
+      return [...firstHalf, ...secondHalf];
+    }
+
+    // not a range error, or we've already split 8 times — give up and rethrow
+    throw err;
+  }
+}
 
 // ─── SyncMeta helpers ─────────────────────────────────────────────────────────
 async function getLastSyncedBlock(): Promise<number> {
@@ -43,9 +74,7 @@ async function saveLastSyncedBlock(block: number): Promise<void> {
 
 // ─── Step 1: Registrations ────────────────────────────────────────────────────
 async function syncRegistrations(fromBlock: number, toBlock: number): Promise<void> {
-  const events = await contract.queryFilter(
-    contract.filters.RegisterEV(), fromBlock, toBlock
-  );
+  const events = await safeQueryFilter(contract.filters.RegisterEV(), fromBlock, toBlock);
   if (events.length === 0) return;
 
   for (const e of events) {
@@ -72,23 +101,30 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
 }
 
 // ─── Step 2: Package buys + upgrades ─────────────────────────────────────────
+// Buy and upgrade events need DIFFERENT services:
+//   - PackageBuyEV     → packageBuyService (first-time purchase, no holding involved)
+//   - PackageUpgradeEV → packageUpgradeService (funded by accumulated holding,
+//                         also writes a PackageUpgrade ledger row)
+//
+// Each event type also carries different args from the contract — buy events
+// don't need the holding/ledger logic, so they're processed independently
+// rather than merged into one generic loop.
 async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
   const [buyEvents, upgradeEvents] = await Promise.all([
-    contract.queryFilter(contract.filters.PackageBuyEV(),     fromBlock, toBlock),
-    contract.queryFilter(contract.filters.PackageUpgradeEV(), fromBlock, toBlock),
+    safeQueryFilter(contract.filters.PackageBuyEV(),     fromBlock, toBlock),
+    safeQueryFilter(contract.filters.PackageUpgradeEV(), fromBlock, toBlock),
   ]);
 
-  const allEvents = [...buyEvents, ...upgradeEvents]
-    .sort((a, b) => a.blockNumber - b.blockNumber || a.transactionIndex - b.transactionIndex);
+  if (buyEvents.length === 0 && upgradeEvents.length === 0) return;
 
-  if (allEvents.length === 0) return;
-
-  let synced = 0;
-  for (const e of allEvents) {
+  // ── PackageBuyEV — first-time purchases ──────────────────────────────────
+  let buySynced = 0;
+  for (const e of buyEvents) {
     const args          = e.args!;
     const userAddress   = (args.user    as string).toLowerCase();
     const packageNumber = (args.package as ethers.BigNumber).toNumber();
-    const txHash        = e.transactionHash.toLowerCase();
+    const packageContractBuyId = (args.currentId as ethers.BigNumber).toNumber();
+    const txHash         = e.transactionHash.toLowerCase();
 
     const user = await prisma.user.findUnique({
       where:  { userAddress },
@@ -96,7 +132,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     });
 
     if (!user) {
-      console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package event`);
+      console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package buy event`);
       try {
         await registerUserService(userAddress, userAddress, 0);
       } catch {
@@ -106,23 +142,50 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     }
 
     try {
-      const result = await packageBuyService(userAddress, packageNumber, txHash);
-      if (result) synced++;
+      const result = await packageBuyService(userAddress, packageNumber,packageContractBuyId, txHash);
+      if (result) buySynced++;
     } catch (err: any) {
-      console.warn(`⚠️  [Sync] PackageEV failed ${userAddress} PKG${packageNumber}:`, err.message);
+      console.warn(`⚠️  [Sync] PackageBuyEV failed ${userAddress} PKG${packageNumber}:`, err.message);
     }
   }
 
-  if (allEvents.length > 0)
-    console.log(`   Packages: ${synced}/${allEvents.length} synced (${fromBlock}–${toBlock})`);
+  // ── PackageUpgradeEV — funded by accumulated holding ─────────────────────
+  let upgradeSynced = 0;
+  for (const e of upgradeEvents) {
+    const args            = e.args!;
+    const userAddress     = (args.user as string).toLowerCase();
+    const packageNumber   = (args.package as ethers.BigNumber).toNumber();
+    const eventTimestamp  = (args.time as ethers.BigNumber).toNumber();
+    const txHash           = e.transactionHash.toLowerCase();
+
+    const user = await prisma.user.findUnique({
+      where:  { userAddress },
+      select: { id: true },
+    });
+
+    if (!user) {
+      console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package upgrade event`);
+      try {
+        await registerUserService(userAddress, userAddress, 0);
+      } catch {
+        console.warn(`⚠️  [Sync] Could not auto-create user ${userAddress} — skipping upgrade`);
+        continue;
+      }
+    }
+
+  }
+
+  const totalEvents = buyEvents.length + upgradeEvents.length;
+  if (totalEvents > 0)
+    console.log(`   Packages: ${buySynced}/${buyEvents.length} bought, ${upgradeSynced}/${upgradeEvents.length} upgraded (${fromBlock}–${toBlock})`);
 }
 
 // ─── Step 3: Income events ────────────────────────────────────────────────────
 async function syncIncome(fromBlock: number, toBlock: number): Promise<void> {
   const [directEvents, genEvents, lapsEvents] = await Promise.all([
-    contract.queryFilter(contract.filters.DirectPayEV(),     fromBlock, toBlock),
-    contract.queryFilter(contract.filters.GenerationPayEV(), fromBlock, toBlock),
-    contract.queryFilter(contract.filters.LapsPayEV(),       fromBlock, toBlock),
+    safeQueryFilter(contract.filters.DirectPayEV(),     fromBlock, toBlock),
+    safeQueryFilter(contract.filters.GenerationPayEV(), fromBlock, toBlock),
+    safeQueryFilter(contract.filters.LapsPayEV(),       fromBlock, toBlock),
   ]);
 
   // ── direct income ──────────────────────────────────────────────────────────
@@ -190,21 +253,8 @@ async function syncIncome(fromBlock: number, toBlock: number): Promise<void> {
 }
 
 // ─── Step 4: UpgradeHolding events ───────────────────────────────────────────
-// Runs AFTER income — depends on User + Package existing.
-//
-// Updated event signature:
-//   UpgradeHolding(
-//     address indexed user,      ← genUpline — who accumulates holding
-//     address fromUser,          ← buyer who triggered it (NOT indexed)
-//     uint256 indexed package,
-//     uint256 indexed amount,    ← actual holding amount in wei
-//     uint256 time,              ← block.timestamp
-//     uint256 lvlPay             ← tree level
-//   )
 async function syncUpgradeHolding(fromBlock: number, toBlock: number): Promise<void> {
-  const events = await contract.queryFilter(
-    contract.filters.UpgradeHolding(), fromBlock, toBlock
-  );
+  const events = await safeQueryFilter(contract.filters.UpgradeHolding(), fromBlock, toBlock);
   if (events.length === 0) return;
 
   let synced = 0;
@@ -242,10 +292,6 @@ async function syncUpgradeHolding(fromBlock: number, toBlock: number): Promise<v
 }
 
 // ─── Process one batch in strict dependency order ─────────────────────────────
-// 1. Registrations → creates User records
-// 2. Packages      → creates Package records  (needs User)
-// 3. Income        → Direct / Gen / Laps      (needs User + Package)
-// 4. UpgradeHolding                           (needs User + Package)
 async function processBatch(fromBlock: number, toBlock: number): Promise<void> {
   console.log(`⏳ [Sync] Batch ${fromBlock}–${toBlock}`);
   await syncRegistrations(fromBlock, toBlock);    // step 1
@@ -284,6 +330,11 @@ export async function runSync(): Promise<void> {
       const to = Math.min(from + BATCH_SIZE - 1, currentBlock);
       await processBatch(from, to);
       await saveLastSyncedBlock(to);
+
+      // small delay between batches — eases rolling rate-limit pressure on
+      // Alchemy, separate from the per-call range-splitting retry above
+      await new Promise(r => setTimeout(r, 250));
+
       from = to + 1;
     }
 
@@ -297,7 +348,7 @@ export async function runSync(): Promise<void> {
 }
 
 // ─── Scheduler ────────────────────────────────────────────────────────────────
-export function startSyncScheduler(intervalMs = 5 * 60 * 1000): void {
+export function startSyncScheduler(intervalMs = 2 * 60 * 1000): void {
   console.log(`🕐 [Sync] Scheduler started — every ${intervalMs / 60000} min`);
   runSync().catch(err => console.error('❌ [Sync] startup error:', err.message));
   setInterval(() => {
