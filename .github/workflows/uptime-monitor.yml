@@ -1,0 +1,49 @@
+# .github/workflows/uptime-monitor.yml
+#
+# Runs independently of your droplet — GitHub's own infrastructure, so
+# it keeps checking even if your server/network is completely down.
+# Checks: frontend reachability, backend /health, backend /health/deep
+# (DB + Alchemy HTTP RPC + Alchemy WSS RPC). Alerts via Telegram only
+# on STATE CHANGE (down->up or up->down) and persistent failures, not
+# on every single check — see the state-tracking logic in the script.
+
+name: Uptime Monitor
+
+on:
+  schedule:
+    # every 5 minutes. GitHub's actual minimum granularity is 5 min, and
+    # scheduled triggers can drift a few minutes under platform load —
+    # treat this as "roughly every 5 min," not an exact guarantee.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {} # lets you manually trigger a check from the Actions tab
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for state cache)
+        uses: actions/checkout@v4
+
+      - name: Restore previous status
+        uses: actions/cache@v4
+        with:
+          path: .monitor-state.json
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: |
+            monitor-state-
+
+      - name: Run health checks and alert on changes
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          FRONTEND_URL:       https://ficon.space
+          BACKEND_HEALTH_URL: ${{ secrets.BACKEND_HEALTH_URL }}      # e.g. https://api.ficon.space/health
+          BACKEND_DEEP_URL:   ${{ secrets.BACKEND_DEEP_HEALTH_URL }} # e.g. https://api.ficon.space/health/deep
+        run: node .github/scripts/check-uptime.js
+
+      - name: Save current status
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .monitor-state.json
+          key: monitor-state-${{ github.run_id }}
