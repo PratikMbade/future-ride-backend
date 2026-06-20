@@ -40,10 +40,7 @@ function sumAmount(records: { amount: string }[]): number {
 // ─── weekly income builder ────────────────────────────────
 // timestamp in DirectIncome/GenerationIncome/LapsIncome is stored as String
 // timestamp in UpgradeHolding is stored as Int
-// We filter UpgradeHolding by Int timestamp, others we filter in JS after fetching
 async function buildWeeklyIncome(userId: string, now: Date) {
-  // fetch ALL income records for this user once — then bucket per week in JS
-  // avoids 32 DB queries (8 weeks × 4 income types)
   const [directRecs, genRecs, lapsRecs, upgradeRecs] = await Promise.all([
     prisma.directIncome.findMany({
       where:  { userId },
@@ -59,7 +56,7 @@ async function buildWeeklyIncome(userId: string, now: Date) {
     }),
     prisma.upgradeHolding.findMany({
       where:  { userId },
-      select: { amount: true, timestamp: true }, // timestamp is Int here
+      select: { amount: true, timestamp: true },
     }),
   ]);
 
@@ -79,13 +76,11 @@ async function buildWeeklyIncome(userId: string, now: Date) {
     const tsFrom = Math.floor(weekStart.getTime() / 1000);
     const tsTo   = Math.floor(weekEnd.getTime()   / 1000);
 
-    // income models store timestamp as String — parse to Int for comparison
     const inRange = (ts: string) => {
       const n = parseInt(ts ?? '0');
       return n >= tsFrom && n <= tsTo;
     };
 
-    // upgradeHolding stores timestamp as Int directly
     const upgradeInRange = (ts: number) => ts >= tsFrom && ts <= tsTo;
 
     const month     = weekStart.toLocaleString('default', { month: 'short' });
@@ -110,10 +105,6 @@ async function buildWeeklyIncome(userId: string, now: Date) {
 }
 
 // ─── today's income builder ───────────────────────────────
-// Same timestamp-type quirk as buildWeeklyIncome: direct/generation/laps
-// store timestamp as String, upgradeHolding stores it as Int. Reuses the
-// same fetch-all-then-filter-in-JS approach rather than adding 4 more
-// per-request DB queries with range filters.
 async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
   const dayStart = new Date(now);
   dayStart.setHours(0, 0, 0, 0);
@@ -144,7 +135,7 @@ async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
     }),
     prisma.upgradeHolding.findMany({
       where:  { userId },
-      select: { amount: true, timestamp: true }, // timestamp is Int here
+      select: { amount: true, timestamp: true },
     }),
   ]);
 
@@ -161,6 +152,10 @@ async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
 }
 
 // ─── GET /api/dashboard/me ────────────────────────────────
+// DB-only — no blockchain calls here. walletFundBalance and
+// upgradeHoldingIncome (the on-chain ones) moved OUT to their own
+// endpoint (getOnChainBalances below) so a slow/rate-limited RPC never
+// blocks this — the fast, frequently-needed dashboard data.
 export const getMe = async (req: Request, res: Response) => {
   try {
     const dbUser = (req as any).dbUser;
@@ -188,11 +183,21 @@ export const getMe = async (req: Request, res: Response) => {
     const referredBy =
       dbUser.referalAddress === dbUser.userAddress ? null : dbUser.referalAddress;
 
-    // ── 6. income totals ──────────────────────────────────
-    // All income models use userId relation — no toAddress field in schema
-    // timestamp is String in direct/gen/laps, Int in upgradeHolding
-    // LostIncome also uses userId relation, amount stored as String like the others
-    const [directRecs, genRecs, lapsRecs, upgradeRecs, lostRecs] = await Promise.all([
+    // sponsor's own contractRegId — referredBy above is just an address;
+    // displaying "Referral ID" on the dashboard needs the sponsor's
+    // registered ID, which requires a separate lookup since dbUser only
+    // carries the CALLER's own contractRegId, not their sponsor's.
+    let referredByContractRegId: number | null = null;
+    if (referredBy) {
+      const sponsor = await prisma.user.findUnique({
+        where:  { userAddress: referredBy },
+        select: { contractRegId: true },
+      });
+      referredByContractRegId = sponsor?.contractRegId ?? null;
+    }
+
+    // ── 6. income totals (DB only) ────────────────────────
+    const [directRecs, genRecs, lapsRecs, lostRecs] = await Promise.all([
       prisma.directIncome.findMany({
         where:  { userId: dbUser.id },
         select: { amount: true },
@@ -205,26 +210,21 @@ export const getMe = async (req: Request, res: Response) => {
         where:  { userId: dbUser.id },
         select: { amount: true },
       }),
-      prisma.upgradeHolding.findMany({
-        where:  { userId: dbUser.id },
-        select: { amount: true },
-      }),
       prisma.lostIncome.findMany({
         where:  { userId: dbUser.id },
         select: { amount: true },
       }),
     ]);
 
-    const directIncome         = sumAmount(directRecs);
-    const generationIncome     = sumAmount(genRecs);
-    const lapsIncome           = sumAmount(lapsRecs);
-    const upgradeHoldingIncome = sumAmount(upgradeRecs);
-    const lostIncome           = sumAmount(lostRecs);
-    // NOTE: lostIncome is intentionally NOT added into totalIncome — it
-    // represents income the user MISSED OUT on (redirected elsewhere due
-    // to a laps event), not income actually received. Including it in
-    // the total would overstate what the user actually earned.
-    const totalIncome          = directIncome + generationIncome + lapsIncome + upgradeHoldingIncome;
+    const directIncome     = sumAmount(directRecs);
+    const generationIncome = sumAmount(genRecs);
+    const lapsIncome       = sumAmount(lapsRecs);
+    const lostIncome       = sumAmount(lostRecs);
+    // totalIncome here is DB-only (direct + generation + laps).
+    // upgradeHoldingIncome is added on the FRONTEND once the separate
+    // on-chain endpoint resolves — see DashboardHomePage's totalIncome
+    // computation. lostIncome intentionally excluded (money missed, not received).
+    const totalIncome = directIncome + generationIncome + lapsIncome;
 
     // ── 7. today's income ─────────────────────────────────
     const todaysIncome = await buildTodaysIncome(dbUser.id, new Date());
@@ -239,6 +239,7 @@ export const getMe = async (req: Request, res: Response) => {
       highestPackage:      highestPkg?.packageNumber ?? 0,
       packagePurchaseDate: highestPkg?.createdAt?.toISOString() ?? new Date().toISOString(),
       referredBy,
+      referredByContractRegId,
       referralLink,
       directTeamCount,
       totalCommunityTeam:  communityCount,
@@ -247,13 +248,11 @@ export const getMe = async (req: Request, res: Response) => {
       userAddress:       dbUser.userAddress,
       contractRegId:     dbUser.contractRegId,
       isRegistered:      dbUser.isRegistered,
-      walletFundBalance: 0,
 
-      // income
+      // income (DB-derived, fast)
       directIncome,
       generationIncome,
       lapsIncome,
-      upgradeHoldingIncome,
       lostIncome,
       totalIncome,
       todaysIncome,

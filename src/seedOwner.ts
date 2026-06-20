@@ -102,4 +102,5 @@ export async function seedOwner(ownerAddress: string) {
   }
 }
 
-seedOwner("0x0b0068c773d126f93Bba4862e3D50731E3e753F3");
+const ownerAddress = process.env.OWNER_ADDRESS || "0x0b0068c773d126f93Bba4862e3D50731E3e753F3"
+seedOwner(ownerAddress);
