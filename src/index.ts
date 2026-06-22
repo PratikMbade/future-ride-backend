@@ -37,6 +37,9 @@ import healthRoutes from './routes/health.routes';
 const app  = express();
 const PORT = parseInt(process.env.PORT ?? '4000');
 
+app.set('trust proxy', 1);
+
+
 // ─── security & compression ───────────────────────────────────────────────────
 app.use(helmet({
   crossOriginEmbedderPolicy: false, // needed for thirdweb iframe flows
