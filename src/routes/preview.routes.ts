@@ -41,6 +41,9 @@ async function countCommunity(rootUserId: string): Promise<number> {
   return count;
 }
 
+function sumAmount(records: { amount: string }[]): number {
+  return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
+}
 // ─────────────────────────────────────────────────────────
 //  GET /api/preview/:userAddress/info
 //  Overview card — same shape as /api/user/me
@@ -78,6 +81,25 @@ router.get('/:userAddress/info', async (req: Request, res: Response) => {
     const referredBy   = user.referalAddress === user.userAddress
       ? null : user.referalAddress;
 
+      const [directRecs, genRecs, lapsRecs] = await Promise.all([
+  prisma.directIncome.findMany({
+    where:  { userId: user.id },
+    select: { amount: true },
+  }),
+  prisma.generationIncome.findMany({
+    where:  { userId: user.id },
+    select: { amount: true },
+  }),
+  prisma.lapsIncome.findMany({
+    where:  { userId: user.id },
+    select: { amount: true },
+  }),
+]);
+
+const directIncome     = sumAmount(directRecs);
+const generationIncome = sumAmount(genRecs);
+const lapsIncome       = sumAmount(lapsRecs);
+
     res.json({
       success: true,
       userAddress:         user.userAddress,
@@ -90,6 +112,9 @@ router.get('/:userAddress/info', async (req: Request, res: Response) => {
       referredBy,
       referralLink,
       directTeamCount,
+        directIncome,
+  generationIncome,
+  lapsIncome,
       totalCommunityTeam: communityCount,
     });
 

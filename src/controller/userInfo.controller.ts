@@ -32,10 +32,6 @@ async function countCommunity(rootUserId: string): Promise<number> {
   return count;
 }
 
-// ─── sum helper — amount stored as String in DB ───────────
-function sumAmount(records: { amount: string }[]): number {
-  return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
-}
 
 // ─── weekly income builder ────────────────────────────────
 // timestamp in DirectIncome/GenerationIncome/LapsIncome is stored as String
@@ -267,6 +263,11 @@ export const getMe = async (req: Request, res: Response) => {
   }
 };
 
+// ─── sum helper — amount stored as String in DB ───────────
+function sumAmount(records: { amount: string }[]): number {
+  return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
+}
+
 // ─── GET /api/dashboard/direct-team ──────────────────────
 export const getDirectTeam = async (req: Request, res: Response) => {
   try {
@@ -310,12 +311,47 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     ]);
 
     const memberAddresses = members.map(m => m.userAddress);
+    const memberIds        = members.map(m => m.id);
+
     const subCounts = await prisma.user.groupBy({
       by:     ['referalAddress'],
       where:  { referalAddress: { in: memberAddresses }, isRegistered: true },
       _count: { _all: true },
     });
     const subMap = new Map(subCounts.map(r => [r.referalAddress, r._count._all]));
+
+    // ── per-member combined income total (direct + generation + laps) ──
+    // Each income table is keyed by userId = WHO RECEIVED that income —
+    // so this is "how much has this team member earned in total on the
+    // platform," not income they generated for the viewer. Amount is
+    // stored as a decimal STRING (e.g. "5.0"), not wei — groupBy's _sum
+    // can't aggregate non-numeric Decimal/String columns the way it does
+    // for Int/Float, so we fetch raw {userId, amount} rows for just
+    // these members and sum in JS, same pattern as buildWeeklyIncome in
+    // dashboardController.ts. Three separate queries (one per income
+    // type) run concurrently rather than one combined query, since each
+    // is a different Prisma model.
+    const [directRows, genRows, lapsRows] = await Promise.all([
+      prisma.directIncome.findMany({
+        where:  { userId: { in: memberIds } },
+        select: { userId: true, amount: true },
+      }),
+      prisma.generationIncome.findMany({
+        where:  { userId: { in: memberIds } },
+        select: { userId: true, amount: true },
+      }),
+      prisma.lapsIncome.findMany({
+        where:  { userId: { in: memberIds } },
+        select: { userId: true, amount: true },
+      }),
+    ]);
+
+    // build one combined total per userId across all three tables
+    const incomeByUserId = new Map<string, number>();
+    for (const row of [...directRows, ...genRows, ...lapsRows]) {
+      const current = incomeByUserId.get(row.userId) ?? 0;
+      incomeByUserId.set(row.userId, current + parseFloat(row.amount ?? '0'));
+    }
 
     const rows = members.map((m, idx) => ({
       id:             m.id,
@@ -327,6 +363,7 @@ export const getDirectTeam = async (req: Request, res: Response) => {
       highestPackage: m.packages[0]?.packageNumber ?? 0,
       packageName:    m.packages[0]?.packageName   ?? 'None',
       directTeam:     subMap.get(m.userAddress)    ?? 0,
+      totalIncome:    incomeByUserId.get(m.id)      ?? 0,
     }));
 
     res.json({

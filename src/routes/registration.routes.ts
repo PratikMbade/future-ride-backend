@@ -3,8 +3,12 @@ import { Router, type Request, type Response } from 'express';
 import { requireAuth, requireRegistered } from '../middleware/authMiddleware';
 import { prisma } from '..';
 import { auth } from '../lib/auth';
+import { registrationFallback } from '../controller/registerFallback.controller';
 
 const router = Router();
+
+router.post('/fallback', registrationFallback);
+
 
 // ─── GET /api/register/info ───────────────────────────────
 // Check if the currently connected wallet is already registered

@@ -4,7 +4,7 @@
 // GenerationTree, each annotated with its generation level (distance
 // from the logged-in user as root = level 1, their direct left/right
 // children = level 2, etc.), plus contractRegId, userAddress, sponsor
-// address, and highest package.
+// address, highest package, and total income earned.
 //
 // Unlike DirectIncome/GenerationIncome (which have a `level` column we
 // can filter on directly in SQL), GenerationTree has no level column —
@@ -12,6 +12,9 @@
 // So filtering by level can't be pushed into a WHERE clause the way
 // package filtering can; it requires walking the tree first to compute
 // each node's level, THEN filtering/paginating in application code.
+// Page/limit/search/package/level are all still applied server-side —
+// nothing in this endpoint sends the full member list to the client;
+// only the requested page after all filters are resolved.
 
 import { Request, Response } from "express";
 import { prisma } from "..";
@@ -23,9 +26,6 @@ interface TeamMemberNode {
 }
 
 // ─── BFS walk that records each descendant's level ─────────
-// Same childMap-building approach as countCommunity in dashboardController,
-// but instead of just counting, we record (userId, level) for every node
-// so level-based filtering is possible afterward.
 async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]> {
   const allNodes = await prisma.generationTree.findMany({
     select: {
@@ -52,11 +52,9 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
   const result: TeamMemberNode[] = [];
   const seen = new Set<string>([rootUserId]);
 
-  // queue holds [userId, level] pairs — root's direct children start at level 1
   let queue: { userId: string; level: number }[] =
     (childMap.get(rootUserId) ?? []).map(c => ({ userId: c.userId, level: 1 }));
 
-  // also need userAddress for each queued node — re-derive from childMap entries
   const addressLookup = new Map<string, string>();
   for (const children of childMap.values()) {
     for (const c of children) addressLookup.set(c.userId, c.userAddress);
@@ -82,6 +80,12 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
   }
 
   return result;
+}
+
+// ─── sum helper — amount stored as String in DB, same pattern as
+//     dashboardController.ts / DirectTeamPage's backend ───────────────
+function sumAmount(records: { amount: string }[]): number {
+  return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
 }
 
 // ─── GET /api/dashboard/generation-team ───────────────────
@@ -113,9 +117,6 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
     }
 
     // ── 3. fetch user details for ONLY the level-filtered set ──
-    // (avoids loading user/package data for the entire tree when a level
-    // filter has already narrowed things down — package/search filters
-    // below operate on this already-reduced set)
     const memberIds = levelFiltered.map(m => m.userId);
 
     const userWhere: any = {
@@ -145,18 +146,47 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
 
     const levelById = new Map(levelFiltered.map(m => [m.userId, m.level]));
 
-    // ── 4. merge level info + sort (level asc, then createdAt desc) ──
+    // ── 4. per-member combined income total (direct + generation + laps) ──
+    // Same approach as DirectTeamPage's backend: each income table is
+    // keyed by userId = WHO RECEIVED that income, so this is "how much
+    // has this team member earned in total," not income generated for
+    // the viewer. Only queries for the users actually matched above
+    // (post search/package filter), not the whole tree.
+    const userIds = users.map(u => u.id);
+    const [directRows, genRows, lapsRows] = await Promise.all([
+      prisma.directIncome.findMany({
+        where:  { userId: { in: userIds } },
+        select: { userId: true, amount: true },
+      }),
+      prisma.generationIncome.findMany({
+        where:  { userId: { in: userIds } },
+        select: { userId: true, amount: true },
+      }),
+      prisma.lapsIncome.findMany({
+        where:  { userId: { in: userIds } },
+        select: { userId: true, amount: true },
+      }),
+    ]);
+
+    const incomeByUserId = new Map<string, number>();
+    for (const row of [...directRows, ...genRows, ...lapsRows]) {
+      const current = incomeByUserId.get(row.userId) ?? 0;
+      incomeByUserId.set(row.userId, current + parseFloat(row.amount ?? '0'));
+    }
+
+    // ── 5. merge level + income info, sort (level asc, then createdAt desc) ──
     const merged = users
       .map(u => ({
-        id:             u.id,
-        userAddress:    u.userAddress,
-        contractRegId:  u.contractRegId,
-        sponsorAddress: u.referalAddress,
-        isRegistered:   u.isRegistered,
-        joinedAt:       u.createdAt.toISOString(),
+        id:              u.id,
+        userAddress:     u.userAddress,
+        contractRegId:   u.contractRegId,
+        sponsorAddress:  u.referalAddress,
+        isRegistered:    u.isRegistered,
+        joinedAt:        u.createdAt.toISOString(),
         generationLevel: levelById.get(u.id) ?? 0,
-        highestPackage: u.packages[0]?.packageNumber ?? 0,
-        packageName:    u.packages[0]?.packageName   ?? 'None',
+        highestPackage:  u.packages[0]?.packageNumber ?? 0,
+        packageName:     u.packages[0]?.packageName   ?? 'None',
+        totalIncome:     incomeByUserId.get(u.id)      ?? 0,
       }))
       .sort((a, b) => a.generationLevel - b.generationLevel || b.joinedAt.localeCompare(a.joinedAt));
 
