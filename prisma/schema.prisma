@@ -112,9 +112,10 @@ model Package {
   updatedAt           DateTime @updatedAt
   userId              String
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  packageBuyTranxHash String   @unique
+  packageBuyTranxHash String   
   tranxHash           String
 
+  @@index([packageBuyTranxHash])
   @@unique([userId, tranxHash, packageNumber])
 }
 

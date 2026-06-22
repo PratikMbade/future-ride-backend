@@ -103,17 +103,19 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
 // ─── Step 2: Package buys + upgrades ─────────────────────────────────────────
 // Buy and upgrade events need DIFFERENT services:
 //   - PackageBuyEV     → packageBuyService (first-time purchase, no holding involved)
-//   - PackageUpgradeEV → packageUpgradeService (funded by accumulated holding,
-//                         also writes a PackageUpgrade ledger row)
+//   - PackageUpgradeEV → packageBuyService also (idempotent — same service
+//                         event-listener.ts uses for both, since the DB
+//                         action is identical; only the contract code path
+//                         that emitted the event differs)
 //
-// Each event type also carries different args from the contract — buy events
-// don't need the holding/ledger logic, so they're processed independently
-// rather than merged into one generic loop.
+// Each event type carries different args from the contract, so they're
+// fetched and looped independently rather than merged into one generic loop.
 async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
   const [buyEvents, upgradeEvents] = await Promise.all([
     safeQueryFilter(contract.filters.PackageBuyEV(),     fromBlock, toBlock),
     safeQueryFilter(contract.filters.PackageUpgradeEV(), fromBlock, toBlock),
   ]);
+
 
   if (buyEvents.length === 0 && upgradeEvents.length === 0) return;
 
@@ -142,7 +144,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     }
 
     try {
-      const result = await packageBuyService(userAddress, packageNumber,packageContractBuyId, txHash);
+      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash);
       if (result) buySynced++;
     } catch (err: any) {
       console.warn(`⚠️  [Sync] PackageBuyEV failed ${userAddress} PKG${packageNumber}:`, err.message);
@@ -150,13 +152,27 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
   }
 
   // ── PackageUpgradeEV — funded by accumulated holding ─────────────────────
+  // BUG FIXED: this loop previously fetched packageContractBuyId-less
+  // args (it read `eventTimestamp` instead, which packageBuyService
+  // doesn't even take), checked whether the user existed, even had
+  // auto-creation logic for a missing user — but never actually called
+  // packageBuyService or any other service to record the upgrade. The
+  // loop body ended right after the existence check, so upgradeSynced
+  // stayed at 0 and every PackageUpgradeEV event was silently dropped:
+  // no log line, no DB write, nothing. Confirmed in production — a
+  // registration transaction's RegisterEV, PackageBuyEV (the auto-buy
+  // of package 1), DirectPayEV, and GenerationPayEV all processed and
+  // logged correctly, while a PackageUpgradeEV emitted in that SAME
+  // transaction (an upline's accumulated-holding auto-upgrade,
+  // triggered as a side effect of the new registration) vanished
+  // entirely with zero trace.
   let upgradeSynced = 0;
   for (const e of upgradeEvents) {
-    const args            = e.args!;
-    const userAddress     = (args.user as string).toLowerCase();
-    const packageNumber   = (args.package as ethers.BigNumber).toNumber();
-    const eventTimestamp  = (args.time as ethers.BigNumber).toNumber();
-    const txHash           = e.transactionHash.toLowerCase();
+    const args                 = e.args!;
+    const userAddress          = (args.user as string).toLowerCase();
+    const packageNumber        = (args.package as ethers.BigNumber).toNumber();
+    const packageContractBuyId = (args.currentId as ethers.BigNumber).toNumber();
+    const txHash                = e.transactionHash.toLowerCase();
 
     const user = await prisma.user.findUnique({
       where:  { userAddress },
@@ -173,6 +189,18 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
       }
     }
 
+    // same service as PackageBuyEV — packageBuyService is idempotent,
+    // matching event-listener.ts's own PackageUpgradeEV handling. Its
+    // compound-unique check (userId + tranxHash + packageNumber)
+    // correctly allows this row to coexist with a DIFFERENT user's
+    // package row sharing the same tx hash, per the
+    // packageBuyTranxHash uniqueness fix made earlier.
+    try {
+      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash);
+      if (result) upgradeSynced++;
+    } catch (err: any) {
+      console.warn(`⚠️  [Sync] PackageUpgradeEV failed ${userAddress} PKG${packageNumber}:`, err.message);
+    }
   }
 
   const totalEvents = buyEvents.length + upgradeEvents.length;
