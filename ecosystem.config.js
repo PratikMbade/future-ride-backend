@@ -20,7 +20,7 @@ module.exports = {
     //    Free headroom   = ~4.15 GB  ← plenty of room for traffic spikes
     // ─────────────────────────────────────────────────────────────────────────
     {
-      name:        'ficon-api',
+      name:        'future-ride-api',
       script:      'dist/index.js',
       instances:   3,               // 3 of 4 vCPUs for HTTP traffic
       exec_mode:   'cluster',
@@ -48,8 +48,8 @@ module.exports = {
       },
 
       // ── logging ─────────────────────────────────────────────────────────
-      out_file:    '/var/log/pm2/ficon-api-out.log',
-      error_file:  '/var/log/pm2/ficon-api-err.log',
+      out_file:    '/var/log/pm2/future-ride-api-out.log',
+      error_file:  '/var/log/pm2/future-ride-api-err.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs:  true,  // merge all 3 cluster workers into one log file
     },
@@ -68,7 +68,7 @@ module.exports = {
     //  × ~200 bytes = ~2 MB — tiny. 800 MB cap is a generous safety net.
     // ─────────────────────────────────────────────────────────────────────────
     {
-      name:        'ficon-worker',
+      name:        'future-ride-worker',
       script:      'dist/worker.js',
       instances:   1,
       exec_mode:   'fork',          // MUST be fork — never cluster
@@ -88,8 +88,8 @@ module.exports = {
         WORKER_ROLE: 'blockchain',
       },
 
-      out_file:   '/var/log/pm2/ficon-worker-out.log',
-      error_file: '/var/log/pm2/ficon-worker-err.log',
+      out_file:   '/var/log/pm2/future-ride-worker-out.log',
+      error_file: '/var/log/pm2/future-ride-worker-err.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
     },
 
