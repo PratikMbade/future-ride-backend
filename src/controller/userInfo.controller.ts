@@ -101,7 +101,9 @@ async function buildWeeklyIncome(userId: string, now: Date) {
 }
 
 // ─── today's income builder ───────────────────────────────
-async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
+// Now returns a per-type breakdown (not just a single total) since the
+// dashboard UI needs today's split across direct/generation/laps/upgrade/lost.
+async function buildTodaysIncome(userId: string, now: Date) {
   const dayStart = new Date(now);
   dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(now);
@@ -116,35 +118,25 @@ async function buildTodaysIncome(userId: string, now: Date): Promise<number> {
   };
   const upgradeInRange = (ts: number) => ts >= tsFrom && ts <= tsTo;
 
-  const [directRecs, genRecs, lapsRecs, upgradeRecs] = await Promise.all([
-    prisma.directIncome.findMany({
-      where:  { userId },
-      select: { amount: true, timestamp: true },
-    }),
-    prisma.generationIncome.findMany({
-      where:  { userId },
-      select: { amount: true, timestamp: true },
-    }),
-    prisma.lapsIncome.findMany({
-      where:  { userId },
-      select: { amount: true, timestamp: true },
-    }),
-    prisma.upgradeHolding.findMany({
-      where:  { userId },
-      select: { amount: true, timestamp: true },
-    }),
+  const [directRecs, genRecs, lapsRecs, upgradeRecs, lostRecs] = await Promise.all([
+    prisma.directIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
+    prisma.generationIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
+    prisma.lapsIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
+    prisma.upgradeHolding.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
+    prisma.lostIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
   ]);
 
-  const todaysDirect     = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
-  const todaysGeneration = sumAmount(genRecs.filter(r => inRange(r.timestamp)));
-  const todaysLaps       = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
-  const todaysUpgrade    = sumAmount(
-    upgradeRecs
-      .filter(r => upgradeInRange(r.timestamp))
-      .map(r => ({ amount: r.amount }))
+  const direct     = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
+  const generation = sumAmount(genRecs.filter(r => inRange(r.timestamp)));
+  const laps        = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
+  const upgrade     = sumAmount(
+    upgradeRecs.filter(r => upgradeInRange(r.timestamp)).map(r => ({ amount: r.amount }))
   );
 
-  return todaysDirect + todaysGeneration + todaysLaps + todaysUpgrade;
+  return {
+    total: direct + generation + laps + upgrade, // lost intentionally excluded — money missed, not received
+    distribution: { direct, generation, laps, upgrade },
+  };
 }
 
 // ─── GET /api/dashboard/me ────────────────────────────────
@@ -173,7 +165,7 @@ export const getMe = async (req: Request, res: Response) => {
 
     // ── 4. referral link ──────────────────────────────────
     const baseUrl      = process.env.FRONTEND_URL ?? 'http://localhost:3000';
-    const referralLink = `${baseUrl}/registration?ref=${dbUser.contractRegId ?? ''}`;
+    const referralLink = `${baseUrl}/registration?ref=${dbUser.futureRideId ?? ''}`;
 
     // ── 5. sponsor ────────────────────────────────────────
     const referredBy =
@@ -183,13 +175,13 @@ export const getMe = async (req: Request, res: Response) => {
     // displaying "Referral ID" on the dashboard needs the sponsor's
     // registered ID, which requires a separate lookup since dbUser only
     // carries the CALLER's own contractRegId, not their sponsor's.
-    let referredByContractRegId: number | null = null;
+    let referredByContractRegId: string | null = null;
     if (referredBy) {
       const sponsor = await prisma.user.findUnique({
         where:  { userAddress: referredBy },
-        select: { contractRegId: true },
+        select: { futureRideId: true },
       });
-      referredByContractRegId = sponsor?.contractRegId ?? null;
+      referredByContractRegId = sponsor?.futureRideId ?? null;
     }
 
     // ── 6. income totals (DB only) ────────────────────────
@@ -242,7 +234,7 @@ export const getMe = async (req: Request, res: Response) => {
 
       // identity
       userAddress:       dbUser.userAddress,
-      contractRegId:     dbUser.contractRegId,
+      contractRegId:     dbUser.futureRideId,
       isRegistered:      dbUser.isRegistered,
 
       // income (DB-derived, fast)
@@ -269,11 +261,12 @@ function sumAmount(records: { amount: string }[]): number {
 }
 
 // ─── GET /api/dashboard/direct-team ──────────────────────
+// ─── GET /api/dashboard/direct-team ──────────────────────
 export const getDirectTeam = async (req: Request, res: Response) => {
   try {
     const dbUser    = (req as any).dbUser;
     const page      = Math.max(1, parseInt(req.query.page  as string) || 1);
-    const pageSize  = Math.min(50, parseInt(req.query.limit as string) || 15);
+    const pageSize  = Math.min(500, parseInt(req.query.limit as string) || 15);
     const skip      = (page - 1) * pageSize;
     const search    = (req.query.search  as string ?? '').toLowerCase().trim();
     const pkgFilter = parseInt(req.query.package as string) || 0;
@@ -300,6 +293,8 @@ export const getDirectTeam = async (req: Request, res: Response) => {
           contractRegId: true,
           isRegistered:  true,
           createdAt:     true,
+          futureRideId:true,
+          contractRegistrationTimestamp:true,
           packages: {
             orderBy: { packageNumber: 'desc' },
             take:    1,
@@ -320,18 +315,20 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     });
     const subMap = new Map(subCounts.map(r => [r.referalAddress, r._count._all]));
 
-    // ── per-member combined income total (direct + generation + laps) ──
+    // ── per-member income breakdown (direct, generation, laps, royalty) ──
     // Each income table is keyed by userId = WHO RECEIVED that income —
     // so this is "how much has this team member earned in total on the
-    // platform," not income they generated for the viewer. Amount is
-    // stored as a decimal STRING (e.g. "5.0"), not wei — groupBy's _sum
-    // can't aggregate non-numeric Decimal/String columns the way it does
-    // for Int/Float, so we fetch raw {userId, amount} rows for just
-    // these members and sum in JS, same pattern as buildWeeklyIncome in
-    // dashboardController.ts. Three separate queries (one per income
-    // type) run concurrently rather than one combined query, since each
-    // is a different Prisma model.
-    const [directRows, genRows, lapsRows] = await Promise.all([
+    // platform," not income they generated for the viewer.
+    //
+    // direct/generation/laps store `amount` as a decimal STRING (e.g. "5.0"),
+    // not wei — groupBy's _sum can't aggregate non-numeric Decimal/String
+    // columns the way it does for Int/Float, so we fetch raw rows and sum
+    // in JS, same pattern as buildWeeklyIncome.
+    //
+    // royaltyIncome is DIFFERENT: its amount field is `amountClaim`, a
+    // genuine Float (not a String), so it's summed separately rather than
+    // going through the shared sumAmount() string-parsing helper.
+    const [directRows, genRows, lapsRows, royaltyRows] = await Promise.all([
       prisma.directIncome.findMany({
         where:  { userId: { in: memberIds } },
         select: { userId: true, amount: true },
@@ -344,27 +341,44 @@ export const getDirectTeam = async (req: Request, res: Response) => {
         where:  { userId: { in: memberIds } },
         select: { userId: true, amount: true },
       }),
+      prisma.royaltyIncome.findMany({
+        where:  { userId: { in: memberIds } },
+        select: { userId: true, amountClaim: true },
+      }),
     ]);
 
-    // build one combined total per userId across all three tables
-    const incomeByUserId = new Map<string, number>();
-    for (const row of [...directRows, ...genRows, ...lapsRows]) {
-      const current = incomeByUserId.get(row.userId) ?? 0;
-      incomeByUserId.set(row.userId, current + parseFloat(row.amount ?? '0'));
-    }
+    const directByUserId     = groupSumByUserId(directRows);
+    const generationByUserId = groupSumByUserId(genRows);
+    const lapsByUserId       = groupSumByUserId(lapsRows);
+    const royaltyByUserId    = groupSumByUserIdFloat(royaltyRows);
 
-    const rows = members.map((m, idx) => ({
-      id:             m.id,
-      rank:           skip + idx + 1,
-      userAddress:    m.userAddress,
-      contractRegId:  m.contractRegId,
-      isRegistered:   m.isRegistered,
-      joinedAt:       m.createdAt.toISOString(),
-      highestPackage: m.packages[0]?.packageNumber ?? 0,
-      packageName:    m.packages[0]?.packageName   ?? 'None',
-      directTeam:     subMap.get(m.userAddress)    ?? 0,
-      totalIncome:    incomeByUserId.get(m.id)      ?? 0,
-    }));
+    const rows = members.map((m, idx) => {
+      const directIncome     = directByUserId.get(m.id)     ?? 0;
+      const generationIncome = generationByUserId.get(m.id) ?? 0;
+      const lapsIncome       = lapsByUserId.get(m.id)        ?? 0;
+      const royaltyIncome    = royaltyByUserId.get(m.id)     ?? 0;
+
+      return {
+        id:               m.id,
+        rank:             skip + idx + 1,
+        userAddress:      m.userAddress,
+        contractRegId:    m.futureRideId,
+        isRegistered:     m.isRegistered,
+        joinedAt:         m.contractRegistrationTimestamp
+                            ? new Date(Number(m.contractRegistrationTimestamp) * 1000).toISOString()
+                            : null,
+        highestPackage:   m.packages[0]?.packageNumber ?? 0,
+        packageName:      m.packages[0]?.packageName   ?? 'None',
+        directTeam:       subMap.get(m.userAddress)     ?? 0,
+
+        // income breakdown
+        directIncome,
+        generationIncome,
+        lapsIncome,
+        royaltyIncome,
+        totalIncome: directIncome + generationIncome + lapsIncome + royaltyIncome,
+      };
+    });
 
     res.json({
       success:    true,
@@ -380,3 +394,24 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+// ─── grouping helpers ──────────────────────────────────────
+// amount stored as decimal String (direct/generation/laps income tables)
+function groupSumByUserId(rows: { userId: string; amount: string }[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const current = map.get(row.userId) ?? 0;
+    map.set(row.userId, current + parseFloat(row.amount ?? '0'));
+  }
+  return map;
+}
+
+// amountClaim stored as a genuine Float (royaltyIncome only)
+function groupSumByUserIdFloat(rows: { userId: string; amountClaim: number }[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const current = map.get(row.userId) ?? 0;
+    map.set(row.userId, current + (row.amountClaim ?? 0));
+  }
+  return map;
+}

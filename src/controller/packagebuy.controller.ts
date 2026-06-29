@@ -16,6 +16,9 @@ const contract = new ethers.Contract(
   provider
 );
 
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
+
 // ─── fetch packageContractBuyId from the transaction's own logs ─────────────
 // The frontend's POST fallback only sends transactionHash — it doesn't
 // (and shouldn't have to) know the on-chain currentId, since that's an
@@ -94,7 +97,7 @@ export const buyPackage = async (req: Request, res: Response) => {
       return;
     }
 
-    if (!/^0x[a-fA-F0-9]{64}$/.test(transactionHash)) {
+    if (!TX_HASH_RE.test(transactionHash)) {
       res.status(400).json({ error: 'Invalid transactionHash format' });
       return;
     }
@@ -153,15 +156,29 @@ export const buyPackage = async (req: Request, res: Response) => {
     }
 
     // ── recover packageContractBuyId from the tx's own event logs ──
-    // This is what makes the POST fallback produce the SAME data shape
-    // as the real-time event listener, instead of leaving this field
-    // null whenever the fallback path is the one that ends up writing
-    // the row.
+    // This is the ONLY real verification this endpoint has that the
+    // person genuinely bought this package on-chain, in this
+    // transaction. getPackageContractBuyIdFromTx returns null when no
+    // matching PackageBuyEV log (for this exact user + package number)
+    // exists in the given transaction — which means EITHER the
+    // transaction hasn't been indexed yet, OR (critically) the
+    // transaction has NOTHING TO DO with buying this package at all.
     const packageContractBuyId = await getPackageContractBuyIdFromTx(
       transactionHash,
       dbUser.userAddress,
       packageNumber,
     );
+
+    if (packageContractBuyId === null) {
+      console.warn(
+        `🚨 [buyPackage] REJECTED — no matching PackageBuyEV found for ${dbUser.userAddress} PKG${packageNumber} in tx ${transactionHash}. ` +
+        `This could mean the tx isn't indexed yet, OR this tx has nothing to do with this package purchase.`
+      );
+      res.status(400).json({
+        error: 'Could not verify this package purchase on-chain. The transaction may not be indexed yet — please try again in a moment, or confirm the transaction hash is correct.',
+      });
+      return;
+    }
 
     // ── create package record ─────────────────────────────
     const newPackage = await prisma.package.create({
@@ -176,7 +193,7 @@ export const buyPackage = async (req: Request, res: Response) => {
       },
     });
 
-    console.log(`✅ Package ${packageNumber} recorded for user ${dbUser.userAddress} via POST fallback (contractBuyId: ${packageContractBuyId ?? 'unresolved'})`);
+    console.log(`✅ Package ${packageNumber} recorded for user ${dbUser.userAddress} via POST fallback (contractBuyId: ${packageContractBuyId})`);
 
     res.status(201).json({
       success: true,
@@ -282,6 +299,198 @@ export const getPackageHistory = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('package-history error:', error.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────
+//  GET /api/packages/lookup/:address
+//  Admin/on-behalf-of lookup — resolves ANY wallet address to its
+//  registration + package status, independent of the caller's own
+//  session. Used by the "register/buy for other user" admin tool to
+//  validate a target address before allowing a package purchase for
+//  them (e.g. blocking package-2 purchases for a user who was never
+//  registered, since they'd own zero packages).
+// ─────────────────────────────────────────────────────────
+export const lookupUserPackage = async (req: Request, res: Response) => {
+  try {
+    const address = (req.params.address as string || '').toLowerCase();
+
+    if (!ADDRESS_RE.test(address)) {
+      res.status(400).json({ error: 'Invalid address format' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where:  { userAddress: address },
+      select: {
+        userAddress:  true,
+        isRegistered: true,
+        futureRideId: true,
+        packages:     { select: { packageNumber: true } },
+      },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: 'User not found — this address has not registered yet' });
+      return;
+    }
+
+    const highestPackage = user.packages.length > 0
+      ? Math.max(...user.packages.map((p) => p.packageNumber))
+      : 0;
+
+    res.json({
+      userAddress:   user.userAddress,
+      isRegistered:  user.isRegistered,
+      futureRideId:  user.futureRideId,
+      highestPackage,
+      nextPackage:   highestPackage < 12 ? highestPackage + 1 : null,
+    });
+
+  } catch (error: any) {
+    console.error('lookupUserPackage error:', error.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────
+//  POST /api/packages/buy-for
+//  On-behalf-of fallback — records a package purchase where the
+//  CONNECTED/PAYING wallet (the admin operating the tool) is not the
+//  same as the wallet that the package belongs to on-chain. Mirrors
+//  buyPackage's verification exactly, just keyed by an explicit
+//  userAddress in the body instead of the authenticated dbUser.
+// ─────────────────────────────────────────────────────────
+export const buyPackageForUser = async (req: Request, res: Response) => {
+  try {
+    const { userAddress, packageNumber, transactionHash } = req.body as {
+      userAddress: string;
+      packageNumber: number;
+      transactionHash: string;
+    };
+
+    if (!userAddress || !packageNumber || !transactionHash) {
+      res.status(400).json({ error: 'userAddress, packageNumber and transactionHash are required' });
+      return;
+    }
+
+    if (!ADDRESS_RE.test(userAddress)) {
+      res.status(400).json({ error: 'Invalid userAddress format' });
+      return;
+    }
+
+    if (typeof packageNumber !== 'number' || packageNumber < 2 || packageNumber > 12) {
+      res.status(400).json({ error: 'packageNumber must be between 2 and 12 for the on-behalf-of flow' });
+      return;
+    }
+
+    if (!TX_HASH_RE.test(transactionHash)) {
+      res.status(400).json({ error: 'Invalid transactionHash format' });
+      return;
+    }
+
+    const targetUser = await prisma.user.findUnique({
+      where:   { userAddress: userAddress.toLowerCase() },
+      include: { packages: true },
+    });
+
+    if (!targetUser) {
+      res.status(404).json({ error: 'Target user not found — they must register first' });
+      return;
+    }
+
+    if (!targetUser.isRegistered) {
+      res.status(403).json({ error: 'Target user is not registered on the contract' });
+      return;
+    }
+
+    const highestOwned = targetUser.packages.length > 0
+      ? Math.max(...targetUser.packages.map((p) => p.packageNumber))
+      : 0;
+
+    // sequential enforcement against the TARGET's own package history,
+    // not the caller's — the caller is just paying, not the owner
+    if (packageNumber !== highestOwned + 1) {
+      res.status(400).json({
+        error: `Target user must buy packages sequentially. They currently own up to package ${highestOwned}; the next purchase must be package ${highestOwned + 1}.`,
+      });
+      return;
+    }
+
+    const packageInfo = getPackageInfo(packageNumber);
+    if (!packageInfo) {
+      res.status(400).json({ error: `Package ${packageNumber} not found` });
+      return;
+    }
+
+    const existing = await prisma.package.findUnique({
+      where: {
+        userId_tranxHash_packageNumber: {
+          userId:        targetUser.id,
+          tranxHash:     transactionHash,
+          packageNumber,
+        },
+      },
+    });
+
+    if (existing) {
+      res.status(200).json({
+        success:        true,
+        alreadyRecorded: true,
+        message:        'Package already recorded',
+        package:        existing,
+      });
+      return;
+    }
+
+    // verify the tx's PackageBuyEV log actually names the TARGET user —
+    // not the admin/caller — for this exact package number
+    const packageContractBuyId = await getPackageContractBuyIdFromTx(
+      transactionHash,
+      targetUser.userAddress,
+      packageNumber,
+    );
+
+    if (packageContractBuyId === null) {
+      res.status(400).json({
+        error: 'Could not verify this package purchase on-chain for the target user. The transaction may not be indexed yet, or it does not correspond to this purchase.',
+      });
+      return;
+    }
+
+    const newPackage = await prisma.package.create({
+      data: {
+        packageNumber,
+        packageContractBuyId,
+        packageName:         packageInfo.name,
+        packageAmount:       packageInfo.amount,
+        packageBuyTranxHash: transactionHash,
+        tranxHash:           transactionHash,
+        userId:              targetUser.id,
+      },
+    });
+
+    console.log(`✅ Package ${packageNumber} recorded for ${targetUser.userAddress} via admin buy-for (contractBuyId: ${packageContractBuyId})`);
+
+    res.status(201).json({
+      success:         true,
+      alreadyRecorded: false,
+      message:         `Package ${packageNumber} activated for ${targetUser.userAddress}`,
+      package:         newPackage,
+    });
+
+  } catch (error: any) {
+    if (error.code === 'P2002') {
+      res.status(200).json({
+        success:         true,
+        alreadyRecorded: true,
+        message:         'Package already recorded (concurrent write)',
+      });
+      return;
+    }
+
+    console.error('buyPackageForUser error:', error.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

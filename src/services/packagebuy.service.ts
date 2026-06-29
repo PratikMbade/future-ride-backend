@@ -7,10 +7,16 @@ export const packageBuyService = async (
   packageNumber: number,
   packageContractBuyId: number,
   transactionHash: string,
+  timestamp:string
 ) => {
   try {
     const normalizedAddress = userAddress.toLowerCase();
     const normalizedTxHash  = transactionHash.toLowerCase();
+
+    if(packageContractBuyId === null){
+      console.log('packageContractBuyId is null we are not updating package record');
+      return
+    }
 
     // 1. find user
     const user = await prisma.user.findUnique({
@@ -77,6 +83,7 @@ export const packageBuyService = async (
         packageName:          packageInfo.name,
         packageAmount:        packageInfo.amount,
         packageContractBuyId: packageContractBuyId,
+        packageBuyTimestamp:timestamp,
         packageBuyTranxHash:  normalizedTxHash,
         tranxHash:            normalizedTxHash,
         userId:               user.id,

@@ -16,6 +16,7 @@ export async function seedOwner(ownerAddress: string) {
     });
 
     let ownerId: string;
+    const futureRideId = `FR${normalizedAddress.slice(-8)}`;
 
     if (isOwnerExist) {
       console.log("✅ Owner already exists — address:", isOwnerExist.userAddress);
@@ -29,6 +30,7 @@ export async function seedOwner(ownerAddress: string) {
           referalAddress: normalizedAddress, // owner refers to themselves
           isRegistered:   true,
           name:           normalizedAddress, // required by better-auth
+          futureRideId
         },
       });
       console.log("✅ Owner created:", owner.userAddress);
@@ -102,5 +104,5 @@ export async function seedOwner(ownerAddress: string) {
   }
 }
 
-const ownerAddress = process.env.OWNER_ADDRESS || "0x0b0068c773d126f93Bba4862e3D50731E3e753F3"
+const ownerAddress = process.env.OWNER_ADDRESS || "0xA30224CA6A6004369114F6A027e8A829EDcDa501"
 seedOwner(ownerAddress);

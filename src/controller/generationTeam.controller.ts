@@ -133,9 +133,11 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
         id:             true,
         userAddress:    true,
         contractRegId:  true,
+        futureRideId:true,
         referalAddress: true,
         isRegistered:   true,
         createdAt:      true,
+        contractRegistrationTimestamp:true,
         packages: {
           orderBy: { packageNumber: 'desc' },
           take:    1,
@@ -146,14 +148,19 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
 
     const levelById = new Map(levelFiltered.map(m => [m.userId, m.level]));
 
-    // ── 4. per-member combined income total (direct + generation + laps) ──
+    // ── 4. per-member income breakdown (direct + generation + laps + royalty) ──
     // Same approach as DirectTeamPage's backend: each income table is
     // keyed by userId = WHO RECEIVED that income, so this is "how much
     // has this team member earned in total," not income generated for
     // the viewer. Only queries for the users actually matched above
     // (post search/package filter), not the whole tree.
+    //
+    // royaltyIncome is summed separately — its amount field is
+    // `amountClaim`, a genuine Float, not a decimal String like the
+    // other three tables, so it can't go through the same string-parsing
+    // accumulator.
     const userIds = users.map(u => u.id);
-    const [directRows, genRows, lapsRows] = await Promise.all([
+    const [directRows, genRows, lapsRows, royaltyRows] = await Promise.all([
       prisma.directIncome.findMany({
         where:  { userId: { in: userIds } },
         select: { userId: true, amount: true },
@@ -166,28 +173,45 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
         where:  { userId: { in: userIds } },
         select: { userId: true, amount: true },
       }),
+      prisma.royaltyIncome.findMany({
+        where:  { userId: { in: userIds } },
+        select: { userId: true, amountClaim: true },
+      }),
     ]);
 
-    const incomeByUserId = new Map<string, number>();
-    for (const row of [...directRows, ...genRows, ...lapsRows]) {
-      const current = incomeByUserId.get(row.userId) ?? 0;
-      incomeByUserId.set(row.userId, current + parseFloat(row.amount ?? '0'));
-    }
+    const directByUserId     = groupSumByUserId(directRows);
+    const generationByUserId = groupSumByUserId(genRows);
+    const lapsByUserId       = groupSumByUserId(lapsRows);
+    const royaltyByUserId    = groupSumByUserIdFloat(royaltyRows);
 
     // ── 5. merge level + income info, sort (level asc, then createdAt desc) ──
     const merged = users
-      .map(u => ({
-        id:              u.id,
-        userAddress:     u.userAddress,
-        contractRegId:   u.contractRegId,
-        sponsorAddress:  u.referalAddress,
-        isRegistered:    u.isRegistered,
-        joinedAt:        u.createdAt.toISOString(),
-        generationLevel: levelById.get(u.id) ?? 0,
-        highestPackage:  u.packages[0]?.packageNumber ?? 0,
-        packageName:     u.packages[0]?.packageName   ?? 'None',
-        totalIncome:     incomeByUserId.get(u.id)      ?? 0,
-      }))
+      .map(u => {
+        const directIncome     = directByUserId.get(u.id)     ?? 0;
+        const generationIncome = generationByUserId.get(u.id) ?? 0;
+        const lapsIncome       = lapsByUserId.get(u.id)        ?? 0;
+        const royaltyIncome    = royaltyByUserId.get(u.id)     ?? 0;
+
+        return {
+          id:              u.id,
+          userAddress:     u.userAddress,
+          contractRegId:   u.futureRideId,
+          referralAddress: u.referalAddress,
+          isRegistered:    u.isRegistered,
+           joinedAt:         u.contractRegistrationTimestamp
+                            ? new Date(Number(u.contractRegistrationTimestamp) * 1000).toISOString()
+                            : null,
+          generationLevel: levelById.get(u.id) ?? 0,
+          highestPackage:  u.packages[0]?.packageNumber ?? 0,
+          packageName:     u.packages[0]?.packageName   ?? 'None',
+
+          directIncome,
+          generationIncome,
+          lapsIncome,
+          royaltyIncome,
+          totalIncome: directIncome + generationIncome + lapsIncome + royaltyIncome,
+        };
+      })
       .sort((a, b) => a.generationLevel - b.generationLevel || b.joinedAt.localeCompare(a.joinedAt));
 
     const total      = merged.length;
@@ -212,3 +236,22 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+// ─── grouping helpers (shared with direct-team controller) ─
+function groupSumByUserId(rows: { userId: string; amount: string }[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const current = map.get(row.userId) ?? 0;
+    map.set(row.userId, current + parseFloat(row.amount ?? '0'));
+  }
+  return map;
+}
+
+function groupSumByUserIdFloat(rows: { userId: string; amountClaim: number }[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const current = map.get(row.userId) ?? 0;
+    map.set(row.userId, current + (row.amountClaim ?? 0));
+  }
+  return map;
+}

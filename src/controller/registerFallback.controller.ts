@@ -113,7 +113,7 @@ export const registrationFallback = async (req: Request, res: Response) => {
       const userAddress = (log.args.user as string).toLowerCase();
       const referral     = (log.args.referal as string).toLowerCase();
       const regId         = (log.args.id as ethers.BigNumber).toNumber();
-
+      const timestamp     = (log.args.time as ethers.BigNumber).toNumber()
       try {
         // idempotent — registerUserService throws if already
         // registered, which we treat as "fine, already handled" rather
@@ -125,7 +125,7 @@ export const registrationFallback = async (req: Request, res: Response) => {
         });
 
         if (!existing?.isRegistered) {
-          await registerUserService(userAddress, referral, regId);
+          await registerUserService(userAddress, referral, regId,String(timestamp));
           // wait for contract state to finalize before reading
           // InternalGenStr, same delay event-listener.ts uses
           await new Promise(r => setTimeout(r, 2000));
@@ -142,9 +142,10 @@ export const registrationFallback = async (req: Request, res: Response) => {
       const userAddress          = (log.args.user as string).toLowerCase();
       const packageNumber        = (log.args.package as ethers.BigNumber).toNumber();
       const packageContractBuyId = (log.args.currentId as ethers.BigNumber).toNumber();
+      const timestamp            = (log.args.time as ethers.BigNumber).toNumber()
 
       try {
-        const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, normalizedTxHash);
+        const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, normalizedTxHash,String(timestamp));
         if (result) results.packagesBought++;
       } catch (err: any) {
         results.errors.push(`PackageBuyEV PKG${packageNumber}: ${err.message}`);
@@ -155,11 +156,12 @@ export const registrationFallback = async (req: Request, res: Response) => {
       const userAddress          = (log.args.user as string).toLowerCase();
       const packageNumber        = (log.args.package as ethers.BigNumber).toNumber();
       const packageContractBuyId = (log.args.currentId as ethers.BigNumber).toNumber();
+      const timestamp            = (log.args.time as ethers.BigNumber).toNumber()
 
       try {
         // same service — packageBuyService is idempotent, matches
         // event-listener.ts's own handling of PackageUpgradeEV
-        const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, normalizedTxHash);
+        const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, normalizedTxHash,String(timestamp));
         if (result) results.packagesUpgraded++;
       } catch (err: any) {
         results.errors.push(`PackageUpgradeEV PKG${packageNumber}: ${err.message}`);

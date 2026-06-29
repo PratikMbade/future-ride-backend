@@ -41,11 +41,12 @@ export const registrationEventListener = () => {
         event:    ethers.Event,
       ) => {
         const id = regId.toNumber();
+        const timestamp = time.toNumber()
         const txHash = event.transactionHash;
         console.log(`📥 RegisterEV: ${user} ref:${referral} id:${id}`);
 
         queueTxEvent(txHash, 'RegisterEV', async () => {
-          await registerUserService(user, referral, id);
+          await registerUserService(user, referral, id,String(timestamp));
           // wait 2s — let contract state finalise before reading InternalGenStr
           await new Promise(r => setTimeout(r, 2000));
           await generationTreeService(user);
@@ -80,10 +81,11 @@ export const packageBuyEventListener = () => {
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
+        const timestamp = time.toNumber()
         console.log(`📥 PackageBuyEV: ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
 
         queueTxEvent(txHash, 'PackageBuyEV', async () => {
-          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash);
+          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash,String(timestamp));
         });
       });
     },
@@ -115,11 +117,12 @@ export const packageUpgradeEventListener = () => {
       ) => {
         const packageNumber = pkg.toNumber();
         const txHash        = event.transactionHash;
+        const timestamp = time.toNumber()
         console.log(`📥 PackageUpgradeEV (auto): ${user} PKG${packageNumber} tx:${txHash} currentId:${currentId}`);
 
         queueTxEvent(txHash, 'PackageUpgradeEV', async () => {
           // same service — packageBuyService is idempotent
-          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash);
+          await packageBuyService(user.toLowerCase(), packageNumber, currentId.toNumber(), txHash,String(timestamp));
         });
       });
     },

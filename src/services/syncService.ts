@@ -82,7 +82,7 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
     const userAddress = (args.user    as string).toLowerCase();
     const referral    = (args.referal as string).toLowerCase();
     const regId       = (args.id      as ethers.BigNumber).toNumber();
-
+    const timestamp = (args.time as ethers.BigNumber).toNumber()
     const existing = await prisma.user.findUnique({
       where:  { userAddress },
       select: { isRegistered: true },
@@ -90,7 +90,7 @@ async function syncRegistrations(fromBlock: number, toBlock: number): Promise<vo
     if (existing?.isRegistered) continue;
 
     try {
-      await registerUserService(userAddress, referral, regId);
+      await registerUserService(userAddress, referral, regId,String(timestamp));
       await new Promise(r => setTimeout(r, 300));
       console.log(`✅ [Sync] Registered: ${userAddress} (#${regId})`);
     } catch (err: any) {
@@ -126,6 +126,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     const userAddress   = (args.user    as string).toLowerCase();
     const packageNumber = (args.package as ethers.BigNumber).toNumber();
     const packageContractBuyId = (args.currentId as ethers.BigNumber).toNumber();
+    const timestamp = (args.time as ethers.BigNumber).toNumber()
     const txHash         = e.transactionHash.toLowerCase();
 
     const user = await prisma.user.findUnique({
@@ -136,7 +137,9 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     if (!user) {
       console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package buy event`);
       try {
-        await registerUserService(userAddress, userAddress, 0);
+        const userDetails = await contract.RegisterUserDetails(userAddress);
+        const contractRegId = (userDetails.regId as ethers.BigNumber).toNumber();
+        await registerUserService(userAddress, userAddress, contractRegId, String(timestamp));
       } catch {
         console.warn(`⚠️  [Sync] Could not auto-create user ${userAddress} — skipping package`);
         continue;
@@ -144,7 +147,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     }
 
     try {
-      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash);
+      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash,String(timestamp));
       if (result) buySynced++;
     } catch (err: any) {
       console.warn(`⚠️  [Sync] PackageBuyEV failed ${userAddress} PKG${packageNumber}:`, err.message);
@@ -172,6 +175,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     const userAddress          = (args.user as string).toLowerCase();
     const packageNumber        = (args.package as ethers.BigNumber).toNumber();
     const packageContractBuyId = (args.currentId as ethers.BigNumber).toNumber();
+    const timestamp = (args.time as ethers.BigNumber).toNumber()
     const txHash                = e.transactionHash.toLowerCase();
 
     const user = await prisma.user.findUnique({
@@ -182,7 +186,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     if (!user) {
       console.warn(`⚠️  [Sync] Auto-creating missing user ${userAddress} for package upgrade event`);
       try {
-        await registerUserService(userAddress, userAddress, 0);
+        await registerUserService(userAddress, userAddress, 0,String(timestamp));
       } catch {
         console.warn(`⚠️  [Sync] Could not auto-create user ${userAddress} — skipping upgrade`);
         continue;
@@ -196,7 +200,7 @@ async function syncPackages(fromBlock: number, toBlock: number): Promise<void> {
     // package row sharing the same tx hash, per the
     // packageBuyTranxHash uniqueness fix made earlier.
     try {
-      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash);
+      const result = await packageBuyService(userAddress, packageNumber, packageContractBuyId, txHash,String(timestamp));
       if (result) upgradeSynced++;
     } catch (err: any) {
       console.warn(`⚠️  [Sync] PackageUpgradeEV failed ${userAddress} PKG${packageNumber}:`, err.message);

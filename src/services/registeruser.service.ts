@@ -7,6 +7,7 @@ export const registerUserService = async (
   userAddress:     string,
   referralAddress: string,
   contractRegId:   number,
+  timestamp:string
 ) => {
   try {
     const normalizedAddress  = userAddress.toLowerCase();
@@ -25,6 +26,10 @@ export const registerUserService = async (
     const isReferralExist = await isUserExist(normalizedReferral);
     if (!isReferralExist) throw new Error('Referral not present in DB');
 
+    // now we have to create future ride id here
+    const futureRideId = `FR${normalizedAddress.slice(-8)}`;
+
+
     // ── upsert ────────────────────────────────────────────
     // Handles:
     //   1. User connected wallet before → row exists → update
@@ -35,12 +40,16 @@ export const registerUserService = async (
         referalAddress: normalizedReferral,
         contractRegId,
         isRegistered:   true,
+        futureRideId:futureRideId,
+        contractRegistrationTimestamp:timestamp
       },
       create: {
         userAddress:    normalizedAddress,
         referalAddress: normalizedReferral,
         contractRegId,
         isRegistered:   true,
+        futureRideId,
+        contractRegistrationTimestamp:timestamp
       },
     });
 

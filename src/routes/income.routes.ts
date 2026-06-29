@@ -7,6 +7,7 @@ import {
   getGenerationIncome,
   getGenerationIncomeTable,
   getLapsIncome,
+  getLostIncome,
 } from '../controller/income.controller';
 
 const router = Router();
@@ -15,6 +16,7 @@ router.use(requireAuth, requireRegistered);
 router.get('/direct',     getDirectIncome);
 router.get('/generation', getGenerationIncome);
 router.get('/laps',       getLapsIncome);
+router.get('/lost',getLostIncome)
 router.get('/direct-income-table',getDirectIncomeTable)
 router.get('/generation-income-table',getGenerationIncomeTable)
 export default router;

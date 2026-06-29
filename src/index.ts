@@ -8,19 +8,6 @@ import compression      from 'compression';
 import registrationRoutes from './routes/registration.routes';
 dotenv.config();
 
-// ─── Prisma — imported from a standalone module, NOT defined here ───────────
-// PREVIOUSLY this file created `export const prisma = new PrismaClient(...)`
-// directly, and other files (event-listener.ts etc.) imported it via
-// `import { prisma } from '../index'`. That import chain executed THIS
-// ENTIRE FILE — Express setup, app.listen(), the WORKER_ROLE check, all of
-// it — every time anything imported prisma from here. When worker.ts
-// imports event-listener.ts, which imported prisma from index.ts, it
-// silently re-ran this file's own blockchain-listener startup INSIDE the
-// worker process, on top of worker.ts's own main() doing the same thing —
-// causing every listener to open multiple times. prisma now lives in its
-// own side-effect-free module; this file re-exports it for any code that
-// still expects `prisma` from here, but no other file should import prisma
-// from this path going forward — import from './lib/prisma' directly.
 import { prisma } from './lib/prisma';
 export { prisma };
 

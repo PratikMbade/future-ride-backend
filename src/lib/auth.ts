@@ -56,10 +56,10 @@ export const auth = betterAuth({
 
   trustedOrigins: [
     // production
-    'https://ficon.space',
-    'https://www.ficon.space',
-    'https://api.ficon.space',
-    'https://auth.ficon.space',
+    'https://futureride.live',
+    'https://www.futureride.live',
+    'https://api.futureride.live',
+    'https://auth.futureride.live',
     // dev
     'http://localhost:5173',   // ← was missing
     'http://localhost:4000',
@@ -67,13 +67,13 @@ export const auth = betterAuth({
   ],
 
   advanced: {
-    cookiePrefix: 'ficon',
+    cookiePrefix: 'future-ride',
 
     // cross-subdomain only in production
     ...(isProd ? {
       crossSubDomainCookies: {
         enabled: true,
-        domain:  '.ficon.space',
+        domain:  '.futureride.live',
       },
     } : {}),
 
