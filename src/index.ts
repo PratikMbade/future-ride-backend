@@ -38,8 +38,8 @@ app.use(compression());             // gzip all JSON responses
 app.use(cors({
   origin: (origin, callback) => {
     const allowed = [
-      'https://ficon.space',
-      'https://www.ficon.space',
+      'https://futureride.live',
+      'https://www.futureride.live',
       'http://localhost:3000',
     ];
     if (!origin || allowed.includes(origin)) {
