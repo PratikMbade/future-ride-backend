@@ -43,7 +43,7 @@ module.exports = {
       // ── environment ─────────────────────────────────────────────────────
       env_production: {
         NODE_ENV:    'production',
-        PORT:        4000,
+        PORT:        4005,
         WORKER_ROLE: 'api',     // prevents blockchain code from running here
       },
 
