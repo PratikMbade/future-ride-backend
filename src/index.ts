@@ -19,6 +19,7 @@ import userRoutes             from './routes/user.routes';
 import incomeRoutes           from './routes/income.routes';
 import chartRoutes            from './routes/chart.routes';
 import previewRoutes          from './routes/preview.routes';
+import royaltyRoutes          from './routes/royalty.routes'
 import healthRoutes from './routes/health.routes';
 
 const app  = express();
@@ -94,6 +95,7 @@ app.use('/api/income',       incomeRoutes);
 app.use('/api/charts',       chartRoutes);
 app.use('/api/preview',      previewRoutes);
 app.use('/api/register', registrationRoutes);
+app.use('/api/royalty',royaltyRoutes)
 // ─── global error handler ─────────────────────────────────────────────────────
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled error:', err.message);

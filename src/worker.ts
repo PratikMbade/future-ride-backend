@@ -9,8 +9,10 @@ import {
   generationEventListener,
   lapsIncomeEventListener,
   upgradeHoldingEventListener,
+  royaltyClaimEventListener,
 } from './contract/event-listener';
 import { startSyncScheduler } from './services/syncService';
+import { startRoyaltySyncScheduler } from './services/royaltysyncService';
 
 async function main() {
   console.log('🔗 [Worker] Blockchain worker starting…');
@@ -27,8 +29,10 @@ async function main() {
   generationEventListener();
   lapsIncomeEventListener();
   upgradeHoldingEventListener();
+  royaltyClaimEventListener();
   // catch-up sync — every 5 minutes
-  startSyncScheduler(5 * 60 * 1000);
+  startSyncScheduler(3 * 60 * 1000);
+  startRoyaltySyncScheduler()
 
   console.log('✅ [Worker] All listeners + sync scheduler running');
 }

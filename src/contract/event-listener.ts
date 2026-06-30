@@ -10,6 +10,8 @@ import { ethers }                  from 'ethers';
 import * as dotenv from 'dotenv';
 import { upgradeHoldingService } from '../services/upgradeHolding.service';
 import { queueTxEvent } from '../utils/txEventQueue';
+import { royaltyIncomeService } from '../services/royaltyincome.service';
+import roayltyContractABI from '../contract/royalty-contract/royalty-abi.json'
 dotenv.config();
 
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS!;
@@ -278,6 +280,7 @@ export const lapsIncomeEventListener = () => {
   });
 };
 
+
 export const upgradeHoldingEventListener = () => {
   reconnectSilent({
     wssUrl:           ALCHEMY_WSS,
@@ -317,6 +320,38 @@ export const upgradeHoldingEventListener = () => {
             txHash,
           );
         });
+      });
+    },
+  });
+};
+
+
+export const royaltyClaimEventListener = () => {
+  reconnectSilent({
+    wssUrl: ALCHEMY_WSS, contractAddress: process.env.ROYALTY_CONTRACT_ADDRESS!,
+    abi: roayltyContractABI, label: 'RoyaltyClaim',
+    onReady: (_, contract) => {
+      contract.removeAllListeners('RoyaltyClaim');
+ 
+      contract.on('RoyaltyClaim', async (
+        user:    string,
+        amount:  ethers.BigNumber,
+        pkg:     ethers.BigNumber,
+        time:    ethers.BigNumber,
+        event:   ethers.Event,
+      ) => {
+        const poolNumber  = pkg.toNumber();
+        const amountClaim = ethers.utils.formatUnits(amount, 18);
+        const timestamp   = time.toNumber();
+        const txHash      = event.transactionHash;
+ 
+        console.log(`📥 RoyaltyClaim: ${user} PKG${poolNumber} +${amountClaim} tx:${txHash}`);
+ 
+        try {
+          await royaltyIncomeService(user, amountClaim, poolNumber, timestamp, txHash);
+        } catch (err: any) {
+          console.error('RoyaltyClaim error:', err.message);
+        }
       });
     },
   });

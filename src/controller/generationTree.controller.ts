@@ -12,7 +12,7 @@ interface TreeNodeResponse {
   id:              string;
   address:         string;
   referralAddress: string;
-  contractRegId:   number | null;
+  futureRideId:   string | null;
   isRegistered:    boolean;
   highestPackage:  HighestPackage | null;
   left:            TreeNodeResponse | null;
@@ -47,7 +47,7 @@ async function buildSubtree(
     where:  { id: rootUserId },
     select: {
       id: true, userAddress: true, referalAddress: true,
-      contractRegId: true, isRegistered: true,
+      futureRideId: true, isRegistered: true,
     },
   });
   if (!rootUser) return null;
@@ -73,7 +73,7 @@ async function buildSubtree(
         where:  { id: { in: frontier } },
         select: {
           id: true, userAddress: true, referalAddress: true,
-          contractRegId: true, isRegistered: true,
+          futureRideId: true, isRegistered: true,
         },
       }),
     ]);
@@ -125,7 +125,7 @@ async function buildSubtree(
       id:              user.id,
       address:         user.userAddress,
       referralAddress: user.referalAddress ?? '',
-      contractRegId:   user.contractRegId ?? null,
+      futureRideId:   user.futureRideId ?? null,
       isRegistered:    user.isRegistered,
       highestPackage:  highestPackageMap.get(userId) ?? null,
       left:  row?.leftUserId  ? buildNode(row.leftUserId,  depth + 1) : null,

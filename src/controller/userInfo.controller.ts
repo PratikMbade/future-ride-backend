@@ -185,7 +185,7 @@ export const getMe = async (req: Request, res: Response) => {
     }
 
     // ── 6. income totals (DB only) ────────────────────────
-    const [directRecs, genRecs, lapsRecs, lostRecs] = await Promise.all([
+    const [directRecs, genRecs, lapsRecs, lostRecs,royaltyRecs] = await Promise.all([
       prisma.directIncome.findMany({
         where:  { userId: dbUser.id },
         select: { amount: true },
@@ -202,17 +202,23 @@ export const getMe = async (req: Request, res: Response) => {
         where:  { userId: dbUser.id },
         select: { amount: true },
       }),
+      prisma.royaltyIncome.findMany({
+      where:  { userId: dbUser.id },
+        select: { amountClaim: true },
+      })
     ]);
 
     const directIncome     = sumAmount(directRecs);
     const generationIncome = sumAmount(genRecs);
     const lapsIncome       = sumAmount(lapsRecs);
     const lostIncome       = sumAmount(lostRecs);
+    const royaltyIncome = sumAmountNumber(royaltyRecs)
     // totalIncome here is DB-only (direct + generation + laps).
     // upgradeHoldingIncome is added on the FRONTEND once the separate
     // on-chain endpoint resolves — see DashboardHomePage's totalIncome
     // computation. lostIncome intentionally excluded (money missed, not received).
-    const totalIncome = directIncome + generationIncome + lapsIncome;
+    const totalIncome = directIncome + generationIncome + lapsIncome + royaltyIncome;
+
 
     // ── 7. today's income ─────────────────────────────────
     const todaysIncome = await buildTodaysIncome(dbUser.id, new Date());
@@ -244,7 +250,7 @@ export const getMe = async (req: Request, res: Response) => {
       lostIncome,
       totalIncome,
       todaysIncome,
-
+      royaltyIncome,
       // chart
       weeklyData,
     });
@@ -258,6 +264,12 @@ export const getMe = async (req: Request, res: Response) => {
 // ─── sum helper — amount stored as String in DB ───────────
 function sumAmount(records: { amount: string }[]): number {
   return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
+}
+
+
+// amount stored as number in DB
+function sumAmountNumber(records: { amountClaim: number }[]): number {
+  return records.reduce((acc, r) => acc + (r.amountClaim ?? 0), 0);
 }
 
 // ─── GET /api/dashboard/direct-team ──────────────────────
