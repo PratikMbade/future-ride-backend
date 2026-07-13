@@ -118,24 +118,26 @@ async function buildTodaysIncome(userId: string, now: Date) {
   };
   const upgradeInRange = (ts: number) => ts >= tsFrom && ts <= tsTo;
 
-  const [directRecs, genRecs, lapsRecs, upgradeRecs, lostRecs] = await Promise.all([
+  const [directRecs, genRecs, lapsRecs, upgradeRecs, _lostRecs, royaltyRecs] = await Promise.all([
     prisma.directIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.generationIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.lapsIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.upgradeHolding.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.lostIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
+    prisma.royaltyIncome.findMany({where:{userId},select:{amountClaim:true,timestamp:true}})
   ]);
 
   const direct     = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
   const generation = sumAmount(genRecs.filter(r => inRange(r.timestamp)));
   const laps        = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
+  const royalty = sumAmountNumber(royaltyRecs.filter(r => inRange(r.timestamp)));
   const upgrade     = sumAmount(
     upgradeRecs.filter(r => upgradeInRange(r.timestamp)).map(r => ({ amount: r.amount }))
   );
 
   return {
-    total: direct + generation + laps + upgrade, // lost intentionally excluded — money missed, not received
-    distribution: { direct, generation, laps, upgrade },
+    total: direct + generation + laps + upgrade + royalty, // lost intentionally excluded — money missed, not received
+    distribution: { direct, generation, laps, upgrade ,royalty},
   };
 }
 
