@@ -10,16 +10,16 @@ async function countCommunity(rootUserId: string): Promise<number> {
   const childMap = new Map<string, string[]>();
   for (const node of allNodes) {
     const children: string[] = [];
-    if (node.leftUserId)  children.push(node.leftUserId);
+    if (node.leftUserId) children.push(node.leftUserId);
     if (node.rightUserId) children.push(node.rightUserId);
     if (children.length > 0) childMap.set(node.uplineUserId, children);
   }
 
   let count = 0;
   const queue = [rootUserId];
-  const seen  = new Set<string>([rootUserId]);
+  const seen = new Set<string>([rootUserId]);
   while (queue.length > 0) {
-    const current  = queue.shift()!;
+    const current = queue.shift()!;
     const children = childMap.get(current) ?? [];
     for (const child of children) {
       if (!seen.has(child)) {
@@ -39,19 +39,19 @@ async function countCommunity(rootUserId: string): Promise<number> {
 async function buildWeeklyIncome(userId: string, now: Date) {
   const [directRecs, genRecs, lapsRecs, upgradeRecs] = await Promise.all([
     prisma.directIncome.findMany({
-      where:  { userId },
+      where: { userId },
       select: { amount: true, timestamp: true },
     }),
     prisma.generationIncome.findMany({
-      where:  { userId },
+      where: { userId },
       select: { amount: true, timestamp: true },
     }),
     prisma.lapsIncome.findMany({
-      where:  { userId },
+      where: { userId },
       select: { amount: true, timestamp: true },
     }),
     prisma.upgradeHolding.findMany({
-      where:  { userId },
+      where: { userId },
       select: { amount: true, timestamp: true },
     }),
   ]);
@@ -70,7 +70,7 @@ async function buildWeeklyIncome(userId: string, now: Date) {
     weekEnd.setHours(23, 59, 59, 999);
 
     const tsFrom = Math.floor(weekStart.getTime() / 1000);
-    const tsTo   = Math.floor(weekEnd.getTime()   / 1000);
+    const tsTo = Math.floor(weekEnd.getTime() / 1000);
 
     const inRange = (ts: string) => {
       const n = parseInt(ts ?? '0');
@@ -79,17 +79,17 @@ async function buildWeeklyIncome(userId: string, now: Date) {
 
     const upgradeInRange = (ts: number) => ts >= tsFrom && ts <= tsTo;
 
-    const month     = weekStart.toLocaleString('default', { month: 'short' });
+    const month = weekStart.toLocaleString('default', { month: 'short' });
     const dateRange = `${month} ${weekStart.getDate()}–${weekEnd.getDate()}`;
 
     weeks.push({
-      week:       `W${8 - i}`,
+      week: `W${8 - i}`,
       dateRange,
-      isCurrent:  i === 0,
-      direct:     sumAmount(directRecs.filter(r => inRange(r.timestamp))),
+      isCurrent: i === 0,
+      direct: sumAmount(directRecs.filter(r => inRange(r.timestamp))),
       generation: sumAmount(genRecs.filter(r => inRange(r.timestamp))),
-      laps:       sumAmount(lapsRecs.filter(r => inRange(r.timestamp))),
-      upgrade:    sumAmount(
+      laps: sumAmount(lapsRecs.filter(r => inRange(r.timestamp))),
+      upgrade: sumAmount(
         upgradeRecs
           .filter(r => upgradeInRange(r.timestamp))
           .map(r => ({ amount: r.amount }))
@@ -110,7 +110,7 @@ async function buildTodaysIncome(userId: string, now: Date) {
   dayEnd.setHours(23, 59, 59, 999);
 
   const tsFrom = Math.floor(dayStart.getTime() / 1000);
-  const tsTo   = Math.floor(dayEnd.getTime()   / 1000);
+  const tsTo = Math.floor(dayEnd.getTime() / 1000);
 
   const inRange = (ts: string) => {
     const n = parseInt(ts ?? '0');
@@ -124,20 +124,20 @@ async function buildTodaysIncome(userId: string, now: Date) {
     prisma.lapsIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.upgradeHolding.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
     prisma.lostIncome.findMany({ where: { userId }, select: { amount: true, timestamp: true } }),
-    prisma.royaltyIncome.findMany({where:{userId},select:{amountClaim:true,timestamp:true}})
+    prisma.royaltyIncome.findMany({ where: { userId }, select: { amountClaim: true, timestamp: true } })
   ]);
 
-  const direct     = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
+  const direct = sumAmount(directRecs.filter(r => inRange(r.timestamp)));
   const generation = sumAmount(genRecs.filter(r => inRange(r.timestamp)));
-  const laps        = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
+  const laps = sumAmount(lapsRecs.filter(r => inRange(r.timestamp)));
   const royalty = sumAmountNumber(royaltyRecs.filter(r => inRange(r.timestamp)));
-  const upgrade     = sumAmount(
+  const upgrade = sumAmount(
     upgradeRecs.filter(r => upgradeInRange(r.timestamp)).map(r => ({ amount: r.amount }))
   );
 
   return {
     total: direct + generation + laps + upgrade + royalty, // lost intentionally excluded — money missed, not received
-    distribution: { direct, generation, laps, upgrade ,royalty},
+    distribution: { direct, generation, laps, upgrade, royalty },
   };
 }
 
@@ -152,9 +152,9 @@ export const getMe = async (req: Request, res: Response) => {
 
     // ── 1. highest package ────────────────────────────────
     const highestPkg = await prisma.package.findFirst({
-      where:   { userId: dbUser.id },
+      where: { userId: dbUser.id },
       orderBy: { packageNumber: 'desc' },
-      select:  { packageNumber: true, createdAt: true },
+      select: { packageNumber: true, createdAt: true },
     });
 
     // ── 2. direct team count ──────────────────────────────
@@ -166,7 +166,7 @@ export const getMe = async (req: Request, res: Response) => {
     const communityCount = await countCommunity(dbUser.id);
 
     // ── 4. referral link ──────────────────────────────────
-    const baseUrl      = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+    const baseUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000';
     const referralLink = `${baseUrl}/registration?ref=${dbUser.futureRideId ?? ''}`;
 
     // ── 5. sponsor ────────────────────────────────────────
@@ -180,40 +180,40 @@ export const getMe = async (req: Request, res: Response) => {
     let referredByContractRegId: string | null = null;
     if (referredBy) {
       const sponsor = await prisma.user.findUnique({
-        where:  { userAddress: referredBy },
+        where: { userAddress: referredBy },
         select: { futureRideId: true },
       });
       referredByContractRegId = sponsor?.futureRideId ?? null;
     }
 
     // ── 6. income totals (DB only) ────────────────────────
-    const [directRecs, genRecs, lapsRecs, lostRecs,royaltyRecs] = await Promise.all([
+    const [directRecs, genRecs, lapsRecs, lostRecs, royaltyRecs] = await Promise.all([
       prisma.directIncome.findMany({
-        where:  { userId: dbUser.id },
+        where: { userId: dbUser.id },
         select: { amount: true },
       }),
       prisma.generationIncome.findMany({
-        where:  { userId: dbUser.id },
+        where: { userId: dbUser.id },
         select: { amount: true },
       }),
       prisma.lapsIncome.findMany({
-        where:  { userId: dbUser.id },
+        where: { userId: dbUser.id },
         select: { amount: true },
       }),
       prisma.lostIncome.findMany({
-        where:  { userId: dbUser.id },
+        where: { userId: dbUser.id },
         select: { amount: true },
       }),
       prisma.royaltyIncome.findMany({
-      where:  { userId: dbUser.id },
+        where: { userId: dbUser.id },
         select: { amountClaim: true },
       })
     ]);
 
-    const directIncome     = sumAmount(directRecs);
+    const directIncome = sumAmount(directRecs);
     const generationIncome = sumAmount(genRecs);
-    const lapsIncome       = sumAmount(lapsRecs);
-    const lostIncome       = sumAmount(lostRecs);
+    const lapsIncome = sumAmount(lapsRecs);
+    const lostIncome = sumAmount(lostRecs);
     const royaltyIncome = sumAmountNumber(royaltyRecs)
     // totalIncome here is DB-only (direct + generation + laps).
     // upgradeHoldingIncome is added on the FRONTEND once the separate
@@ -232,18 +232,18 @@ export const getMe = async (req: Request, res: Response) => {
       success: true,
 
       // account card
-      highestPackage:      highestPkg?.packageNumber ?? 0,
+      highestPackage: highestPkg?.packageNumber ?? 0,
       packagePurchaseDate: highestPkg?.createdAt?.toISOString() ?? new Date().toISOString(),
       referredBy,
       referredByContractRegId,
       referralLink,
       directTeamCount,
-      totalCommunityTeam:  communityCount,
+      totalCommunityTeam: communityCount,
 
       // identity
-      userAddress:       dbUser.userAddress,
-      contractRegId:     dbUser.futureRideId,
-      isRegistered:      dbUser.isRegistered,
+      userAddress: dbUser.userAddress,
+      contractRegId: dbUser.futureRideId,
+      isRegistered: dbUser.isRegistered,
 
       // income (DB-derived, fast)
       directIncome,
@@ -274,20 +274,53 @@ function sumAmountNumber(records: { amountClaim: number }[]): number {
   return records.reduce((acc, r) => acc + (r.amountClaim ?? 0), 0);
 }
 
+async function buildChildMap(): Promise<Map<string, string[]>> {
+  const allNodes = await prisma.generationTree.findMany({
+    select: { uplineUserId: true, leftUserId: true, rightUserId: true },
+  })
+  const childMap = new Map<string, string[]>()
+  for (const node of allNodes) {
+    const children: string[] = []
+    if (node.leftUserId) children.push(node.leftUserId)
+    if (node.rightUserId) children.push(node.rightUserId)
+    if (children.length > 0) childMap.set(node.uplineUserId, children)
+  }
+  return childMap
+}
+
+function countDescendants(rootUserId: string, childMap: Map<string, string[]>): number {
+  let count = 0
+  const queue = [rootUserId]
+  const seen = new Set<string>([rootUserId])
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    const children = childMap.get(current) ?? []
+    for (const child of children) {
+      if (!seen.has(child)) {
+        seen.add(child)
+        queue.push(child)
+        count++
+      }
+    }
+  }
+  return count
+}
+
+
 // ─── GET /api/dashboard/direct-team ──────────────────────
 // ─── GET /api/dashboard/direct-team ──────────────────────
 export const getDirectTeam = async (req: Request, res: Response) => {
   try {
-    const dbUser    = (req as any).dbUser;
-    const page      = Math.max(1, parseInt(req.query.page  as string) || 1);
-    const pageSize  = Math.min(500, parseInt(req.query.limit as string) || 15);
-    const skip      = (page - 1) * pageSize;
-    const search    = (req.query.search  as string ?? '').toLowerCase().trim();
+    const dbUser = (req as any).dbUser;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(500, parseInt(req.query.limit as string) || 15);
+    const skip = (page - 1) * pageSize;
+    const search = (req.query.search as string ?? '').toLowerCase().trim();
     const pkgFilter = parseInt(req.query.package as string) || 0;
 
     const where: any = {
       referalAddress: dbUser.userAddress,
-      isRegistered:   true,
+      isRegistered: true,
       ...(search ? { userAddress: { contains: search, mode: 'insensitive' } } : {}),
     };
 
@@ -299,20 +332,20 @@ export const getDirectTeam = async (req: Request, res: Response) => {
       prisma.user.findMany({
         where,
         skip,
-        take:    pageSize,
+        take: pageSize,
         orderBy: { createdAt: 'desc' },
         select: {
-          id:            true,
-          userAddress:   true,
+          id: true,
+          userAddress: true,
           contractRegId: true,
-          isRegistered:  true,
-          createdAt:     true,
-          futureRideId:true,
-          contractRegistrationTimestamp:true,
+          isRegistered: true,
+          createdAt: true,
+          futureRideId: true,
+          contractRegistrationTimestamp: true,
           packages: {
             orderBy: { packageNumber: 'desc' },
-            take:    1,
-            select:  { packageNumber: true, packageName: true },
+            take: 1,
+            select: { packageNumber: true, packageName: true },
           },
         },
       }),
@@ -320,11 +353,11 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     ]);
 
     const memberAddresses = members.map(m => m.userAddress);
-    const memberIds        = members.map(m => m.id);
+    const memberIds = members.map(m => m.id);
 
     const subCounts = await prisma.user.groupBy({
-      by:     ['referalAddress'],
-      where:  { referalAddress: { in: memberAddresses }, isRegistered: true },
+      by: ['referalAddress'],
+      where: { referalAddress: { in: memberAddresses }, isRegistered: true },
       _count: { _all: true },
     });
     const subMap = new Map(subCounts.map(r => [r.referalAddress, r._count._all]));
@@ -344,46 +377,52 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     // going through the shared sumAmount() string-parsing helper.
     const [directRows, genRows, lapsRows, royaltyRows] = await Promise.all([
       prisma.directIncome.findMany({
-        where:  { userId: { in: memberIds } },
+        where: { userId: { in: memberIds } },
         select: { userId: true, amount: true },
       }),
       prisma.generationIncome.findMany({
-        where:  { userId: { in: memberIds } },
+        where: { userId: { in: memberIds } },
         select: { userId: true, amount: true },
       }),
       prisma.lapsIncome.findMany({
-        where:  { userId: { in: memberIds } },
+        where: { userId: { in: memberIds } },
         select: { userId: true, amount: true },
       }),
       prisma.royaltyIncome.findMany({
-        where:  { userId: { in: memberIds } },
+        where: { userId: { in: memberIds } },
         select: { userId: true, amountClaim: true },
       }),
     ]);
 
-    const directByUserId     = groupSumByUserId(directRows);
+    const directByUserId = groupSumByUserId(directRows);
     const generationByUserId = groupSumByUserId(genRows);
-    const lapsByUserId       = groupSumByUserId(lapsRows);
-    const royaltyByUserId    = groupSumByUserIdFloat(royaltyRows);
+    const lapsByUserId = groupSumByUserId(lapsRows);
+    const royaltyByUserId = groupSumByUserIdFloat(royaltyRows);
+
+    const childMap = await buildChildMap()
+    const totalTeamByUserId = new Map<string, number>(
+      members.map(m => [m.id, countDescendants(m.id, childMap)])
+    )
 
     const rows = members.map((m, idx) => {
-      const directIncome     = directByUserId.get(m.id)     ?? 0;
+      const directIncome = directByUserId.get(m.id) ?? 0;
       const generationIncome = generationByUserId.get(m.id) ?? 0;
-      const lapsIncome       = lapsByUserId.get(m.id)        ?? 0;
-      const royaltyIncome    = royaltyByUserId.get(m.id)     ?? 0;
+      const lapsIncome = lapsByUserId.get(m.id) ?? 0;
+      const royaltyIncome = royaltyByUserId.get(m.id) ?? 0;
 
       return {
-        id:               m.id,
-        rank:             skip + idx + 1,
-        userAddress:      m.userAddress,
-        contractRegId:    m.futureRideId,
-        isRegistered:     m.isRegistered,
-        joinedAt:         m.contractRegistrationTimestamp
-                            ? new Date(Number(m.contractRegistrationTimestamp) * 1000).toISOString()
-                            : null,
-        highestPackage:   m.packages[0]?.packageNumber ?? 0,
-        packageName:      m.packages[0]?.packageName   ?? 'None',
-        directTeam:       subMap.get(m.userAddress)     ?? 0,
+        id: m.id,
+        rank: skip + idx + 1,
+        userAddress: m.userAddress,
+        contractRegId: m.futureRideId,
+        isRegistered: m.isRegistered,
+        joinedAt: m.contractRegistrationTimestamp
+          ? new Date(Number(m.contractRegistrationTimestamp) * 1000).toISOString()
+          : null,
+        highestPackage: m.packages[0]?.packageNumber ?? 0,
+        packageName: m.packages[0]?.packageName ?? 'None',
+        directTeam: subMap.get(m.userAddress) ?? 0,
+        totalTeam: totalTeamByUserId.get(m.id) ?? 0,
 
         // income breakdown
         directIncome,
@@ -395,12 +434,12 @@ export const getDirectTeam = async (req: Request, res: Response) => {
     });
 
     res.json({
-      success:    true,
+      success: true,
       total,
       page,
       pageSize,
       totalPages: Math.ceil(total / pageSize),
-      members:    rows,
+      members: rows,
     });
 
   } catch (error: any) {
