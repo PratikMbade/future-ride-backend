@@ -4,7 +4,7 @@
 // GenerationTree, each annotated with its generation level (distance
 // from the logged-in user as root = level 1, their direct left/right
 // children = level 2, etc.), plus contractRegId, userAddress, sponsor
-// address, highest package, and total income earned.
+// address, upline address, highest package, and total income earned.
 //
 // Unlike DirectIncome/GenerationIncome (which have a `level` column we
 // can filter on directly in SQL), GenerationTree has no level column —
@@ -12,7 +12,7 @@
 // So filtering by level can't be pushed into a WHERE clause the way
 // package filtering can; it requires walking the tree first to compute
 // each node's level, THEN filtering/paginating in application code.
-// Page/limit/search/package/level are all still applied server-side —
+// Page/limit/search/package/level/sort are all still applied server-side —
 // nothing in this endpoint sends the full member list to the client;
 // only the requested page after all filters are resolved.
 
@@ -20,31 +20,42 @@ import { Request, Response } from "express";
 import { prisma } from "..";
 
 interface TeamMemberNode {
-  userId:         string;
-  userAddress:    string;
-  level:          number;
+  userId:        string;
+  userAddress:   string;
+  level:         number;
+  uplineAddress: string;
 }
 
-// ─── BFS walk that records each descendant's level ─────────
+// ─── BFS walk that records each descendant's level + upline address ─────────
 async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]> {
   const allNodes = await prisma.generationTree.findMany({
     select: {
-      uplineUserId: true,
-      leftUserId:   true,
-      leftChildAddress: true,
-      rightUserId:  true,
+      uplineUserId:      true,
+      leftUserId:        true,
+      leftChildAddress:  true,
+      rightUserId:       true,
       rightChildAddress: true,
+      uplineUser: {
+        select: {
+          walletAddresses: {
+            where: { isPrimary: true },
+            select: { address: true },
+            take: 1,
+          },
+        },
+      },
     },
   });
 
-  const childMap = new Map<string, { userId: string; userAddress: string }[]>();
+  const childMap = new Map<string, { userId: string; userAddress: string; uplineAddress: string }[]>();
   for (const node of allNodes) {
-    const children: { userId: string; userAddress: string }[] = [];
+    const uplineAddress = node.uplineUser?.walletAddresses[0]?.address ?? '';
+    const children: { userId: string; userAddress: string; uplineAddress: string }[] = [];
     if (node.leftUserId && node.leftChildAddress) {
-      children.push({ userId: node.leftUserId, userAddress: node.leftChildAddress });
+      children.push({ userId: node.leftUserId, userAddress: node.leftChildAddress, uplineAddress });
     }
     if (node.rightUserId && node.rightChildAddress) {
-      children.push({ userId: node.rightUserId, userAddress: node.rightChildAddress });
+      children.push({ userId: node.rightUserId, userAddress: node.rightChildAddress, uplineAddress });
     }
     if (children.length > 0) childMap.set(node.uplineUserId, children);
   }
@@ -52,29 +63,30 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
   const result: TeamMemberNode[] = [];
   const seen = new Set<string>([rootUserId]);
 
-  let queue: { userId: string; level: number }[] =
-    (childMap.get(rootUserId) ?? []).map(c => ({ userId: c.userId, level: 1 }));
-
-  const addressLookup = new Map<string, string>();
-  for (const children of childMap.values()) {
-    for (const c of children) addressLookup.set(c.userId, c.userAddress);
-  }
+  let queue: { userId: string; userAddress: string; uplineAddress: string; level: number }[] =
+    (childMap.get(rootUserId) ?? []).map(c => ({
+      userId:        c.userId,
+      userAddress:   c.userAddress,
+      uplineAddress: c.uplineAddress,
+      level:         1,
+    }));
 
   while (queue.length > 0) {
-    const { userId, level } = queue.shift()!;
+    const { userId, userAddress, uplineAddress, level } = queue.shift()!;
     if (seen.has(userId)) continue;
     seen.add(userId);
 
-    result.push({
-      userId,
-      userAddress: addressLookup.get(userId) ?? '',
-      level,
-    });
+    result.push({ userId, userAddress, level, uplineAddress });
 
     const children = childMap.get(userId) ?? [];
     for (const child of children) {
       if (!seen.has(child.userId)) {
-        queue.push({ userId: child.userId, level: level + 1 });
+        queue.push({
+          userId:        child.userId,
+          userAddress:   child.userAddress,
+          uplineAddress: child.uplineAddress,
+          level:         level + 1,
+        });
       }
     }
   }
@@ -82,24 +94,22 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
   return result;
 }
 
-// ─── sum helper — amount stored as String in DB, same pattern as
-//     dashboardController.ts / DirectTeamPage's backend ───────────────
-function sumAmount(records: { amount: string }[]): number {
-  return records.reduce((acc, r) => acc + parseFloat(r.amount ?? '0'), 0);
-}
-
 // ─── GET /api/dashboard/generation-team ───────────────────
 export const getGenerationTeam = async (req: Request, res: Response) => {
   try {
     const dbUser = (req as any).dbUser;
 
-    const page       = Math.max(1, parseInt(req.query.page  as string) || 1);
+    const page        = Math.max(1, parseInt(req.query.page  as string) || 1);
     const pageSize    = Math.min(50, parseInt(req.query.limit as string) || 10);
     const search      = (req.query.search as string ?? '').toLowerCase().trim();
     const pkgFilter   = parseInt(req.query.package as string) || 0;
     const levelFilter = req.query.level !== undefined && req.query.level !== ''
       ? parseInt(req.query.level as string)
       : undefined;
+
+    // Sort params — validated below in the switch (unknown keys fall back to default).
+    const sortKey = (req.query.sortKey as string) || 'generationLevel';
+    const sortDir: 'asc' | 'desc' = req.query.sortDir === 'desc' ? 'desc' : 'asc';
 
     // ── 1. walk the tree once to get every descendant + their level ──
     const allMembers = await walkGenerationTree(dbUser.id);
@@ -130,14 +140,14 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
     const users = await prisma.user.findMany({
       where: userWhere,
       select: {
-        id:             true,
-        userAddress:    true,
-        contractRegId:  true,
-        futureRideId:true,
-        referalAddress: true,
-        isRegistered:   true,
-        createdAt:      true,
-        contractRegistrationTimestamp:true,
+        id:                            true,
+        userAddress:                   true,
+        contractRegId:                 true,
+        futureRideId:                  true,
+        referalAddress:                true,
+        isRegistered:                  true,
+        createdAt:                     true,
+        contractRegistrationTimestamp: true,
         packages: {
           orderBy: { packageNumber: 'desc' },
           take:    1,
@@ -146,7 +156,8 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
       },
     });
 
-    const levelById = new Map(levelFiltered.map(m => [m.userId, m.level]));
+    const levelById  = new Map(levelFiltered.map(m => [m.userId, m.level]));
+    const uplineById = new Map(levelFiltered.map(m => [m.userId, m.uplineAddress]));
 
     // ── 4. per-member income breakdown (direct + generation + laps + royalty) ──
     // Same approach as DirectTeamPage's backend: each income table is
@@ -184,36 +195,58 @@ export const getGenerationTeam = async (req: Request, res: Response) => {
     const lapsByUserId       = groupSumByUserId(lapsRows);
     const royaltyByUserId    = groupSumByUserIdFloat(royaltyRows);
 
-    // ── 5. merge level + income info, sort (level asc, then createdAt desc) ──
-    const merged = users
-      .map(u => {
-        const directIncome     = directByUserId.get(u.id)     ?? 0;
-        const generationIncome = generationByUserId.get(u.id) ?? 0;
-        const lapsIncome       = lapsByUserId.get(u.id)        ?? 0;
-        const royaltyIncome    = royaltyByUserId.get(u.id)     ?? 0;
+    // ── 5. merge level + upline + income info ──
+    const merged = users.map(u => {
+      const directIncome     = directByUserId.get(u.id)     ?? 0;
+      const generationIncome = generationByUserId.get(u.id) ?? 0;
+      const lapsIncome       = lapsByUserId.get(u.id)       ?? 0;
+      const royaltyIncome    = royaltyByUserId.get(u.id)    ?? 0;
 
-        return {
-          id:              u.id,
-          userAddress:     u.userAddress,
-          contractRegId:   u.futureRideId,
-          referralAddress: u.referalAddress,
-          isRegistered:    u.isRegistered,
-           joinedAt:         u.contractRegistrationTimestamp
-                            ? new Date(Number(u.contractRegistrationTimestamp) * 1000).toISOString()
-                            : null,
-          generationLevel: levelById.get(u.id) ?? 0,
-          highestPackage:  u.packages[0]?.packageNumber ?? 0,
-          packageName:     u.packages[0]?.packageName   ?? 'None',
+      return {
+        id:              u.id,
+        userAddress:     u.userAddress,
+        contractRegId:   u.futureRideId,
+        referralAddress: u.referalAddress,
+        uplineAddress:   uplineById.get(u.id) ?? '',
+        isRegistered:    u.isRegistered,
+        joinedAt:        u.contractRegistrationTimestamp
+                           ? new Date(Number(u.contractRegistrationTimestamp) * 1000).toISOString()
+                           : null,
+        generationLevel: levelById.get(u.id) ?? 0,
+        highestPackage:  u.packages[0]?.packageNumber ?? 0,
+        packageName:     u.packages[0]?.packageName   ?? 'None',
 
-          directIncome,
-          generationIncome,
-          lapsIncome,
-          royaltyIncome,
-          totalIncome: directIncome + generationIncome + lapsIncome + royaltyIncome,
-        };
-      })
-      .sort((a, b) => a.generationLevel - b.generationLevel || b.joinedAt.localeCompare(a.joinedAt));
+        directIncome,
+        generationIncome,
+        lapsIncome,
+        royaltyIncome,
+        totalIncome: directIncome + generationIncome + lapsIncome + royaltyIncome,
+      };
+    });
 
+    // ── 6. sort by requested column ──
+    const dir = sortDir === 'asc' ? 1 : -1;
+    merged.sort((a, b) => {
+      switch (sortKey) {
+        case 'generationLevel':
+          return (a.generationLevel - b.generationLevel) * dir
+            || (b.joinedAt ?? '').localeCompare(a.joinedAt ?? ''); // tiebreak: newest first
+        case 'highestPackage':
+          return (a.highestPackage - b.highestPackage) * dir;
+        case 'totalIncome':
+          return (a.totalIncome - b.totalIncome) * dir;
+        case 'contractRegId':
+          return (Number(a.contractRegId ?? 0) - Number(b.contractRegId ?? 0)) * dir;
+        case 'joinedAt':
+          return ((a.joinedAt ?? '').localeCompare(b.joinedAt ?? '')) * dir;
+        default:
+          // unknown key → default ordering
+          return (a.generationLevel - b.generationLevel)
+            || (b.joinedAt ?? '').localeCompare(a.joinedAt ?? '');
+      }
+    });
+
+    // ── 7. paginate ──
     const total      = merged.length;
     const totalPages = Math.ceil(total / pageSize);
     const skip       = (page - 1) * pageSize;
