@@ -37,11 +37,7 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
       rightChildAddress: true,
       uplineUser: {
         select: {
-          walletAddresses: {
-            where: { isPrimary: true },
-            select: { address: true },
-            take: 1,
-          },
+          userAddress:true
         },
       },
     },
@@ -49,7 +45,7 @@ async function walkGenerationTree(rootUserId: string): Promise<TeamMemberNode[]>
 
   const childMap = new Map<string, { userId: string; userAddress: string; uplineAddress: string }[]>();
   for (const node of allNodes) {
-    const uplineAddress = node.uplineUser?.walletAddresses[0]?.address ?? '';
+    const uplineAddress = node.uplineUser?.userAddress;
     const children: { userId: string; userAddress: string; uplineAddress: string }[] = [];
     if (node.leftUserId && node.leftChildAddress) {
       children.push({ userId: node.leftUserId, userAddress: node.leftChildAddress, uplineAddress });
